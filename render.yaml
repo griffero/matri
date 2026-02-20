@@ -1,0 +1,19 @@
+services:
+  - type: web
+    name: matri-mesas-app
+    env: node
+    plan: starter
+    buildCommand: npm install
+    startCommand: npm start
+    autoDeploy: true
+    envVars:
+      - key: NODE_VERSION
+        value: 20
+      - key: SPREADSHEET_ID
+        value: 1sgfxgivQKo3tKic5AUeGLsRgVPudB1WkYcG2eUarXVw
+      - key: SHEET_NAME
+        value: Invitados
+      - key: CACHE_TTL_MS
+        value: 15000
+      - key: FETCH_TIMEOUT_MS
+        value: 10000

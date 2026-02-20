@@ -1,0 +1,56 @@
+<!doctype html>
+<html lang="es">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Plano Mesas - Matrimonio</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;700&display=swap" rel="stylesheet" />
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body>
+    <header class="topbar">
+      <div>
+        <h1>Plano Mesas</h1>
+        <p class="sub">Estado en vivo desde Google Sheets</p>
+      </div>
+      <div class="actions">
+        <button id="refreshBtn">Actualizar</button>
+      </div>
+    </header>
+
+    <main class="layout">
+      <section class="board-wrap">
+        <div class="legend">
+          <span class="chip green">Disponible</span>
+          <span class="chip yellow">Casi llena</span>
+          <span class="chip orange">Llena</span>
+          <span class="chip red">Sobrecupo</span>
+        </div>
+        <div class="board" id="board">
+          <img src="assets/plano.png" alt="Plano de mesas" class="plan-img" />
+          <div id="markers"></div>
+        </div>
+      </section>
+
+      <aside class="panel">
+        <article class="card">
+          <h2>Resumen</h2>
+          <div id="summary" class="summary"></div>
+        </article>
+        <article class="card">
+          <h2 id="mesaTitle">Mesa seleccionada</h2>
+          <p id="mesaInfo" class="muted">Selecciona una mesa en el plano.</p>
+          <ul id="guestList" class="guest-list"></ul>
+        </article>
+        <article class="card small">
+          <h3>Estado</h3>
+          <p id="statusText" class="muted">Conectando...</p>
+        </article>
+      </aside>
+    </main>
+
+    <script src="app.js"></script>
+  </body>
+</html>

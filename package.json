@@ -1,0 +1,17 @@
+{
+  "name": "matri-mesas-app",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Plano de mesas conectado a Google Sheets",
+  "main": "server.js",
+  "engines": {
+    "node": ">=18"
+  },
+  "scripts": {
+    "start": "node server.js",
+    "dev": "NODE_ENV=development node server.js"
+  },
+  "dependencies": {
+    "express": "^4.21.2"
+  }
+}
