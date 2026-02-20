@@ -133,6 +133,29 @@ refreshBtn.addEventListener("click", () => load(true));
 
 /* ========== Editor mode ========== */
 
+let saveTimeout = null;
+
+async function saveCoords() {
+  const readout = document.getElementById("coordReadout");
+  try {
+    if (readout) readout.textContent = "Guardando...";
+    const res = await fetch("/api/coords", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(coords)
+    });
+    const data = await res.json();
+    if (readout) readout.textContent = data.ok ? "Guardado" : `Error: ${data.error}`;
+  } catch (err) {
+    if (readout) readout.textContent = `Error: ${err.message}`;
+  }
+}
+
+function debouncedSave() {
+  if (saveTimeout) clearTimeout(saveTimeout);
+  saveTimeout = setTimeout(saveCoords, 400);
+}
+
 function setupDrag(marker, key) {
   marker.style.touchAction = "none";
 
@@ -161,6 +184,7 @@ function setupDrag(marker, key) {
       marker.classList.remove("dragging");
       marker.removeEventListener("pointermove", onMove);
       marker.removeEventListener("pointerup", onUp);
+      debouncedSave();
     };
 
     marker.addEventListener("pointermove", onMove);
@@ -173,26 +197,9 @@ function initEditor() {
   if (!toolbar) return;
   toolbar.style.display = "flex";
 
-  // Pause polling in editor mode
   stopPolling();
 
-  document.getElementById("saveBtn").addEventListener("click", async () => {
-    try {
-      const res = await fetch("/api/coords", {
-        method: "PUT",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(coords)
-      });
-      const data = await res.json();
-      if (data.ok) {
-        alert(`Guardado: ${data.keys} coordenadas`);
-      } else {
-        alert(`Error: ${data.error}`);
-      }
-    } catch (err) {
-      alert(`Error al guardar: ${err.message}`);
-    }
-  });
+  document.getElementById("saveBtn").addEventListener("click", saveCoords);
 
   document.getElementById("exportBtn").addEventListener("click", () => {
     const blob = new Blob([JSON.stringify(coords, null, 2)], { type: "application/json" });
@@ -212,15 +219,13 @@ function initEditor() {
       try {
         const imported = JSON.parse(reader.result);
         coords = imported;
-        // Reposition all markers
         document.querySelectorAll(".marker").forEach((marker) => {
           const key = marker.dataset.key;
           const pos = coords[key] || [50, 50];
           marker.style.left = `${pos[0]}%`;
           marker.style.top = `${pos[1]}%`;
         });
-        const readout = document.getElementById("coordReadout");
-        if (readout) readout.textContent = `Importado: ${Object.keys(imported).length} coords`;
+        saveCoords();
       } catch (err) {
         alert(`Error al importar: ${err.message}`);
       }
