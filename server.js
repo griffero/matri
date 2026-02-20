@@ -1,5 +1,7 @@
 const express = require("express");
 const path = require("path");
+const fs = require("fs");
+const { capacities, mesaOrder, parseMesa, mesaCapacity, mesaStatus, normalize } = require("./lib/mesa-logic");
 
 const app = express();
 
@@ -9,16 +11,7 @@ const SPREADSHEET_ID = process.env.SPREADSHEET_ID || "1sgfxgivQKo3tKic5AUeGLsRgV
 const SHEET_NAME = process.env.SHEET_NAME || "Invitados";
 const CACHE_TTL_MS = Number(process.env.CACHE_TTL_MS || 15000);
 const FETCH_TIMEOUT_MS = Number(process.env.FETCH_TIMEOUT_MS || 10000);
-
-const capacities = {
-  1: 10, 2: 10, 3: 10, 4: 10, 5: 10,
-  6: 8, 7: 8, 8: 8, 9: 8, 10: 8, 11: 8, 12: 8, 13: 8,
-  14: 20, 15: 20, 16: 20, 17: 20,
-  18: 8, 19: 8, 20: 8, 21: 8, 22: 8, 23: 8, 24: 8, 25: 8,
-  26: 10, 27: 10, 28: 10, 29: 10, 30: 10, 31: 10, 32: 10, 33: 10, 34: 10, 35: 10
-};
-
-const mesaOrder = [...Array(35).keys()].map((n) => n + 1).concat(["Novios"]);
+const COORDS_PATH = path.join(__dirname, "data", "coords.json");
 
 let cache = {
   at: 0,
@@ -26,40 +19,10 @@ let cache = {
   error: null
 };
 
-function parseMesa(v) {
-  const s = String(v || "").trim();
-  if (!s) return null;
-  if (/^mesa novios$/i.test(s)) return "Novios";
-  const m = s.match(/(\d+)/);
-  if (!m) return null;
-  const n = Number(m[1]);
-  if (Number.isInteger(n) && n >= 1 && n <= 35) return n;
-  return null;
-}
-
-function mesaCapacity(m) {
-  return m === "Novios" ? 15 : capacities[m] || 0;
-}
-
-function mesaStatus(used, cap) {
-  if (used > cap) return "🔴 SOBRECUPO";
-  if (used === cap) return "🟠 LLENA";
-  if (used >= cap - 2) return "🟡 CASI LLENA";
-  return "🟢 DISPONIBLE";
-}
-
 function stripGvizPayload(text) {
   const match = text.match(/setResponse\((.*)\);?\s*$/s);
   if (!match) throw new Error("No se pudo parsear respuesta gviz");
   return JSON.parse(match[1]);
-}
-
-function normalize(s) {
-  return String(s || "")
-    .normalize("NFD")
-    .replace(/[\u0300-\u036f]/g, "")
-    .trim()
-    .toLowerCase();
 }
 
 function countMatches(rows, colIdx, fn) {
@@ -224,6 +187,30 @@ app.get("/api/mesas", async (req, res) => {
     }
     return res.status(502).json({ error: "No se pudo cargar datos de Google Sheets", detail: err.message });
   }
+});
+
+app.get("/api/coords", (_req, res) => {
+  try {
+    const raw = fs.readFileSync(COORDS_PATH, "utf8");
+    res.json(JSON.parse(raw));
+  } catch {
+    res.json({});
+  }
+});
+
+app.put("/api/coords", (req, res) => {
+  const body = req.body;
+  if (!body || typeof body !== "object" || Array.isArray(body)) {
+    return res.status(400).json({ error: "Body must be an object" });
+  }
+  for (const [key, val] of Object.entries(body)) {
+    if (!Array.isArray(val) || val.length !== 2 || typeof val[0] !== "number" || typeof val[1] !== "number") {
+      return res.status(400).json({ error: `Invalid coord for key "${key}": expected [number, number]` });
+    }
+  }
+  fs.mkdirSync(path.dirname(COORDS_PATH), { recursive: true });
+  fs.writeFileSync(COORDS_PATH, JSON.stringify(body, null, 2));
+  res.json({ ok: true, keys: Object.keys(body).length });
 });
 
 app.get("*", (_req, res) => {

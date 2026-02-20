@@ -20,6 +20,17 @@
       </div>
     </header>
 
+    <div id="editorToolbar" style="display:none">
+      <span class="editor-badge">Modo Editor</span>
+      <button id="saveBtn">Guardar</button>
+      <button id="exportBtn">Exportar JSON</button>
+      <label id="importLabel" class="editor-btn-label">
+        Importar JSON
+        <input type="file" id="importInput" accept=".json" style="display:none" />
+      </label>
+      <span id="coordReadout" class="coord-readout"></span>
+    </div>
+
     <main class="layout">
       <section class="board-wrap">
         <div class="legend">
