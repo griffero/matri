@@ -11,11 +11,14 @@
 }
 
 * { box-sizing: border-box; }
+html, body { height: 100%; overflow: hidden; }
 body {
   margin: 0;
   color: var(--ink);
   font-family: "Space Grotesk", sans-serif;
   background: radial-gradient(circle at 12% 8%, #ffffff, var(--bg));
+  display: flex;
+  flex-direction: column;
 }
 
 .topbar {
@@ -42,12 +45,15 @@ button {
 
 .layout {
   display: grid;
-  grid-template-columns: 1fr 360px;
+  grid-template-columns: 1fr 340px;
   gap: 12px;
   padding: 12px;
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
 }
 
-.board-wrap { min-width: 0; }
+.board-wrap { min-width: 0; overflow: auto; }
 .legend { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 8px; }
 .chip {
   display: inline-block;
@@ -89,41 +95,69 @@ button {
 .marker.red { background: rgba(198,40,40,.95); color: #fff; }
 .marker.active { outline: 3px solid #111827; z-index: 4; }
 
-.panel { display: grid; gap: 10px; }
+.panel {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  min-height: 0;
+  overflow: hidden;
+}
 .card {
   background: var(--card);
   border: 1px solid var(--line);
   border-radius: 12px;
   padding: 12px;
+  flex-shrink: 0;
 }
-.card h2, .card h3 { margin: 0 0 8px; }
+.card.mesa-detail {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+.card h2, .card h3 { margin: 0 0 6px; font-size: 15px; }
+.card p { margin: 4px 0 0; }
 .small { font-size: 13px; }
-.muted { color: var(--muted); }
+.muted { color: var(--muted); font-size: 13px; }
 
 .summary {
   display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: 8px;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 6px;
 }
 .kpi {
   border: 1px solid var(--line);
-  border-radius: 10px;
-  padding: 8px;
+  border-radius: 8px;
+  padding: 6px;
   background: #fbfdff;
+  text-align: center;
 }
-.kpi b { font-size: 18px; display: block; }
-.kpi span { font-size: 12px; color: var(--muted); }
+.kpi b { font-size: 16px; display: block; }
+.kpi span { font-size: 10px; color: var(--muted); }
 
 .guest-list {
   margin: 0;
-  padding-left: 18px;
-  max-height: 260px;
-  overflow: auto;
-  font-size: 13px;
+  padding: 0;
+  list-style: none;
+  overflow-y: auto;
+  flex: 1;
+  min-height: 0;
+  font-size: 12px;
+}
+.guest-list li {
+  padding: 4px 8px;
+  border-radius: 6px;
+}
+.guest-list li:nth-child(odd) {
+  background: var(--bg);
 }
 
 @media (max-width: 1100px) {
-  .layout { grid-template-columns: 1fr; }
+  html, body { overflow: auto; }
+  .layout { grid-template-columns: 1fr; overflow: visible; }
+  .panel { overflow: visible; }
+  .card.mesa-detail { max-height: 400px; }
 }
 
 /* Editor mode */
