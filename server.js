@@ -114,7 +114,18 @@ async function fetchSheetSnapshot() {
   const cols = parsed.table.cols.map((c) => c.label || c.id || "");
   const rows = parsed.table.rows.map((r) => (r.c || []).map((c) => (c ? c.v : "")));
   const idx = detectColumns(cols, rows);
-  return { cols, rows, idx };
+  return { cols, rows, idx, source: "gviz" };
+}
+
+async function readCellViaComposio(cellA1) {
+  if (!process.env.COMPOSIO_API_KEY) return null;
+  const range = `${SHEET_NAME}!${cellA1}`;
+  const resp = await composio.executeAction("GOOGLESHEETS_BATCH_GET", {
+    spreadsheet_id: SPREADSHEET_ID,
+    ranges: [range]
+  });
+  const value = resp?.data?.valueRanges?.[0]?.values?.[0]?.[0];
+  return value == null ? "" : String(value);
 }
 
 function enqueueWrite(taskFn) {
@@ -316,7 +327,9 @@ app.put("/api/guest-mesa", async (req, res) => {
       }
 
       if (sourceMesaKey !== undefined && sourceMesaKey !== null) {
-        const currentMesa = parseMesa(rows[rowIdx][idx.mesa]);
+        const pendingCurrent = pendingMesaByRow.get(sheetRow);
+        const effectiveMesaRaw = pendingCurrent ? pendingCurrent.targetMesaLabel : rows[rowIdx][idx.mesa];
+        const currentMesa = parseMesa(effectiveMesaRaw);
         const expected = String(sourceMesaKey) === "_unassigned" ? null : parseMesa(sourceMesaKey);
         if (currentMesa !== expected) {
           throw new Error("Conflicto de estado: la mesa actual cambió, recarga antes de mover");
@@ -338,17 +351,25 @@ app.put("/api/guest-mesa", async (req, res) => {
 
       let verified = false;
       for (let attempt = 1; attempt <= VERIFY_WRITE_MAX_ATTEMPTS; attempt++) {
-        const snap = await fetchSheetSnapshot();
-        if (rowIdx < snap.rows.length) {
-          const seen = snap.rows[rowIdx][snap.idx.mesa];
-          const seenMesa = parseMesa(seen);
-          const ok = isClear ? String(seen || "").trim() === "" : seenMesa === mesa;
-          if (ok) {
-            verified = true;
-            pendingMesaByRow.delete(sheetRow);
-            break;
-          }
+        let seen = null;
+        try {
+          seen = await readCellViaComposio(cell);
+        } catch {
+          seen = null;
         }
+
+        if (seen === null) {
+          const snap = await fetchSheetSnapshot();
+          if (rowIdx < snap.rows.length) seen = snap.rows[rowIdx][snap.idx.mesa];
+        }
+
+        const seenMesa = parseMesa(seen);
+        const ok = isClear ? String(seen || "").trim() === "" : seenMesa === mesa;
+        if (ok) {
+          verified = true;
+          break;
+        }
+
         await sleep(VERIFY_WRITE_DELAY_MS * attempt);
       }
 
