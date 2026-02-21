@@ -68,7 +68,8 @@ function detectColumns(cols, rows) {
     nombre: cols.findIndex((c) => /(^|\s)nombre(\s|$)/i.test(String(c || ""))),
     plus: cols.findIndex((c) => /\+1/i.test(String(c || ""))),
     mesa: cols.findIndex((c) => /^mesa$/i.test(String(c || ""))),
-    grupo: cols.findIndex((c) => /^grupo$/i.test(String(c || "")))
+    grupo: cols.findIndex((c) => /^grupo$/i.test(String(c || ""))),
+    va: cols.findIndex((c) => /^va\?$/i.test(String(c || "")))
   };
   if (byLabel.nombre >= 0 && byLabel.plus >= 0 && byLabel.mesa >= 0) return byLabel;
 
@@ -94,7 +95,8 @@ function detectColumns(cols, rows) {
   }
 
   const grupoIdx = cols.findIndex((c) => /grupo/i.test(String(c || "")));
-  return { nombre: bestName.idx, plus: bestPlus.idx, mesa: bestMesa.idx, grupo: grupoIdx };
+  const vaIdx = cols.findIndex((c) => /(^|\s)va\?/i.test(String(c || "")));
+  return { nombre: bestName.idx, plus: bestPlus.idx, mesa: bestMesa.idx, grupo: grupoIdx, va: vaIdx };
 }
 
 async function fetchWithTimeout(url, timeoutMs) {
@@ -194,6 +196,8 @@ async function loadMesasFromSheet() {
     const sheetRow = i + 2; // headers=1 => first data row is sheet row 2
     const nombre = String(row[idx.nombre] || "").trim();
     if (!nombre) continue;
+    const vaRaw = idx.va >= 0 ? normalize(row[idx.va]) : "";
+    if (vaRaw === "no") continue;
     invitados += 1;
 
     const plus = normalize(row[idx.plus]) === "si" || normalize(row[idx.plus]) === "sí";
