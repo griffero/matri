@@ -55,6 +55,13 @@
             <select id="mesaSelect"><option value="">Selecciona una mesa</option></select>
             <button id="undoBtn" class="undo-btn" disabled title="Deshacer (Cmd+Z)">&#x21A9; Deshacer</button>
           </div>
+          <input id="guestSearch" type="text" placeholder="Buscar invitado..." autocomplete="off" />
+          <div class="bulk-actions">
+            <span id="bulkCount">0 seleccionados</span>
+            <select id="bulkTargetMesa"><option value="">Mover a...</option></select>
+            <button id="bulkMoveBtn" class="undo-btn" disabled>Mover</button>
+            <button id="bulkClearBtn" class="undo-btn" disabled>Limpiar</button>
+          </div>
           <p id="mesaInfo" class="muted">Selecciona una mesa en el plano.</p>
           <ul id="guestList" class="guest-list"></ul>
         </article>

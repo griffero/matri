@@ -134,6 +134,36 @@ button {
   color: var(--ink);
   cursor: pointer;
 }
+#guestSearch {
+  width: 100%;
+  margin-bottom: 6px;
+  font-family: inherit;
+  font-size: 13px;
+  padding: 7px 9px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  color: var(--ink);
+}
+.bulk-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 6px;
+}
+#bulkCount {
+  font-size: 11px;
+  color: var(--muted);
+  min-width: 86px;
+}
+#bulkTargetMesa {
+  flex: 1;
+  font-family: inherit;
+  font-size: 12px;
+  padding: 6px 8px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #fff;
+}
 .undo-btn {
   font-size: 12px;
   padding: 6px 10px;
@@ -183,6 +213,17 @@ button {
   justify-content: space-between;
   align-items: center;
   gap: 6px;
+}
+.guest-main {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+.guest-main span {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 .guest-grupo {
   font-size: 10px;

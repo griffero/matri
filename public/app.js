@@ -1,6 +1,11 @@
 const markersEl = document.getElementById("markers");
 const summaryEl = document.getElementById("summary");
 const mesaSelectEl = document.getElementById("mesaSelect");
+const guestSearchEl = document.getElementById("guestSearch");
+const bulkTargetMesaEl = document.getElementById("bulkTargetMesa");
+const bulkMoveBtn = document.getElementById("bulkMoveBtn");
+const bulkClearBtn = document.getElementById("bulkClearBtn");
+const bulkCountEl = document.getElementById("bulkCount");
 const mesaInfoEl = document.getElementById("mesaInfo");
 const guestListEl = document.getElementById("guestList");
 const statusTextEl = document.getElementById("statusText");
@@ -11,6 +16,8 @@ const POLL_MS = 15000;
 let lastData = null;
 let pollTimer = null;
 let moveInFlight = false;
+let guestSearchQuery = "";
+const selectedGuestIds = new Set();
 
 /* --- Undo stack --- */
 const undoStack = [];
@@ -75,6 +82,26 @@ function statusClass(status) {
   return "green";
 }
 
+function normText(v) {
+  return String(v || "")
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .toLowerCase()
+    .trim();
+}
+
+function updateBulkUi() {
+  bulkCountEl.textContent = `${selectedGuestIds.size} seleccionados`;
+  const canMove = selectedGuestIds.size > 0 && !!bulkTargetMesaEl.value && !moveInFlight;
+  bulkMoveBtn.disabled = !canMove;
+  bulkClearBtn.disabled = selectedGuestIds.size === 0 || moveInFlight;
+}
+
+function clearSelectedGuests() {
+  selectedGuestIds.clear();
+  updateBulkUi();
+}
+
 function renderSummary(meta) {
   const items = [
     [meta.totalUsed, "Personas asignadas"],
@@ -109,6 +136,17 @@ function findGuestCurrentMesaKey(guestId) {
     if (m.guests.some((g) => g.id === guestId)) return String(m.key);
   }
   if ((lastData.unassigned || []).some((g) => g.id === guestId)) return "_unassigned";
+  return null;
+}
+
+function findGuestById(guestId) {
+  if (!lastData) return null;
+  for (const m of lastData.mesas) {
+    const g = m.guests.find((x) => x.id === guestId);
+    if (g) return { guest: g, mesaLabel: m.label, mesaKey: String(m.key) };
+  }
+  const u = (lastData.unassigned || []).find((x) => x.id === guestId);
+  if (u) return { guest: u, mesaLabel: "Sin Asignar", mesaKey: "_unassigned" };
   return null;
 }
 
@@ -169,8 +207,31 @@ async function moveGuest(guestId, guestName, targetMesa, fromUndo = false) {
   }
 }
 
+async function moveSelectedGuestsBulk() {
+  if (!bulkTargetMesaEl.value || selectedGuestIds.size === 0 || !lastData || moveInFlight) return;
+  const targetKey = bulkTargetMesaEl.value;
+  const targetLabel = targetKey === "_unassigned"
+    ? "Sin Asignar"
+    : (lastData.mesas.find((m) => String(m.key) === targetKey)?.label || "");
+  if (!targetLabel) return;
+
+  const ids = Array.from(selectedGuestIds);
+  for (const guestId of ids) {
+    const row = findGuestById(guestId);
+    if (!row) continue;
+    if (row.mesaLabel === targetLabel) continue;
+    await moveGuest(guestId, row.guest.name, targetLabel);
+  }
+  clearSelectedGuests();
+  await load(true);
+}
+
 function selectMesa(m) {
+  const prevMesaKey = selectedMesaKey;
   selectedMesaKey = m.key;
+  if (prevMesaKey !== null && String(prevMesaKey) !== String(selectedMesaKey)) {
+    clearSelectedGuests();
+  }
   document.querySelectorAll(".marker").forEach((el) => el.classList.remove("active"));
   const marker = document.querySelector(`[data-key="${m.key}"]`);
   if (marker) marker.classList.add("active");
@@ -182,14 +243,31 @@ function selectMesa(m) {
     mesaInfoEl.textContent = `${m.guests.length} invitados sin mesa`;
   }
 
-  const frag = document.createDocumentFragment();
-  m.guests
+  const q = normText(guestSearchQuery);
+  const filteredGuests = m.guests
+    .filter((g) => !q || normText(g.name).includes(q))
     .sort((a, b) => a.name.localeCompare(b.name, "es"))
-    .forEach((g) => {
+  ;
+  mesaInfoEl.textContent += q ? ` | ${filteredGuests.length} encontrados` : "";
+
+  const frag = document.createDocumentFragment();
+  filteredGuests.forEach((g) => {
       const li = document.createElement("li");
+      const main = document.createElement("div");
+      main.className = "guest-main";
+      const cb = document.createElement("input");
+      cb.type = "checkbox";
+      cb.checked = selectedGuestIds.has(g.id);
+      cb.addEventListener("change", () => {
+        if (cb.checked) selectedGuestIds.add(g.id);
+        else selectedGuestIds.delete(g.id);
+        updateBulkUi();
+      });
       const nameSpan = document.createElement("span");
       nameSpan.textContent = `${g.name}${g.plus1 ? " (+1)" : ""}`;
-      li.appendChild(nameSpan);
+      main.appendChild(cb);
+      main.appendChild(nameSpan);
+      li.appendChild(main);
       if (g.grupo) {
         const grupoSpan = document.createElement("span");
         grupoSpan.className = "guest-grupo";
@@ -249,6 +327,21 @@ function populateDropdown(data) {
   mesaSelectEl.appendChild(optSA);
 
   if (prev) mesaSelectEl.value = prev;
+
+  const prevBulk = bulkTargetMesaEl.value;
+  bulkTargetMesaEl.innerHTML = '<option value="">Mover a...</option>';
+  for (const m of data.mesas) {
+    const opt = document.createElement("option");
+    opt.value = String(m.key);
+    opt.textContent = m.label;
+    bulkTargetMesaEl.appendChild(opt);
+  }
+  const optBulkSA = document.createElement("option");
+  optBulkSA.value = "_unassigned";
+  optBulkSA.textContent = "Sin Asignar";
+  bulkTargetMesaEl.appendChild(optBulkSA);
+  if (prevBulk) bulkTargetMesaEl.value = prevBulk;
+  updateBulkUi();
 }
 
 mesaSelectEl.addEventListener("change", () => {
@@ -364,6 +457,18 @@ function stopPolling() {
 }
 
 refreshBtn.addEventListener("click", () => load(true));
+guestSearchEl.addEventListener("input", () => {
+  guestSearchQuery = guestSearchEl.value || "";
+  const selected = getMesaByKey(selectedMesaKey);
+  if (selected) selectMesa(selected);
+});
+bulkTargetMesaEl.addEventListener("change", updateBulkUi);
+bulkMoveBtn.addEventListener("click", moveSelectedGuestsBulk);
+bulkClearBtn.addEventListener("click", () => {
+  clearSelectedGuests();
+  const selected = getMesaByKey(selectedMesaKey);
+  if (selected) selectMesa(selected);
+});
 
 /* ========== Editor mode ========== */
 
