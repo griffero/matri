@@ -224,6 +224,7 @@ function renderBoard(mesas) {
     });
     marker.addEventListener("drop", async (e) => {
       e.preventDefault();
+      e.stopPropagation();
       marker.classList.remove("drop-target");
       document.querySelectorAll(".marker").forEach((mk) => {
         mk.classList.remove("can-drop");
@@ -264,6 +265,42 @@ function renderBoard(mesas) {
     markersEl.appendChild(marker);
   });
 }
+
+/* --- Drop on board (not on a marker) → unassign guest --- */
+const boardEl = document.getElementById("board");
+boardEl.addEventListener("dragover", (e) => e.preventDefault());
+boardEl.addEventListener("drop", async (e) => {
+  e.preventDefault();
+  document.querySelectorAll(".marker").forEach((mk) => {
+    mk.classList.remove("can-drop");
+    mk.classList.remove("drop-target");
+  });
+
+  if (!dragState || dragState.sourceMesaKey === "_unassigned") return;
+  const { guestName, sourceMesaLabel } = dragState;
+
+  statusTextEl.textContent = `Quitando ${guestName} de ${sourceMesaLabel}...`;
+
+  try {
+    const res = await fetch("/api/guest-mesa", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ guestName, targetMesa: "Sin Asignar" })
+    });
+    const data = await res.json();
+    if (!res.ok) {
+      alert(data.error || "Error al desasignar invitado");
+      statusTextEl.textContent = `Error: ${data.error}`;
+      return;
+    }
+    pushUndo(guestName, sourceMesaLabel);
+    statusTextEl.textContent = `${guestName} → Sin Asignar`;
+    await load(true);
+  } catch (err) {
+    alert(`Error: ${err.message}`);
+    statusTextEl.textContent = `Error: ${err.message}`;
+  }
+});
 
 async function load(force = false) {
   statusTextEl.textContent = "Actualizando...";
