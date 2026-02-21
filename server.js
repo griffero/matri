@@ -163,6 +163,23 @@ async function readCellViaComposio(cellA1) {
   return value == null ? "" : String(value);
 }
 
+async function readCellsViaComposio(cellsA1) {
+  if (!process.env.COMPOSIO_API_KEY || !Array.isArray(cellsA1) || cellsA1.length === 0) return null;
+  const ranges = cellsA1.map((c) => `${SHEET_NAME}!${c}`);
+  const resp = await composio.executeAction("GOOGLESHEETS_BATCH_GET", {
+    spreadsheet_id: SPREADSHEET_ID,
+    ranges
+  });
+  const out = new Map();
+  const vr = resp?.data?.valueRanges || [];
+  for (let i = 0; i < vr.length; i++) {
+    const cell = cellsA1[i];
+    const value = vr[i]?.values?.[0]?.[0];
+    out.set(cell, value == null ? "" : String(value));
+  }
+  return out;
+}
+
 function enqueueWrite(taskFn) {
   const next = writeQueue.then(taskFn, taskFn);
   writeQueue = next.catch(() => undefined);
@@ -429,6 +446,148 @@ app.put("/api/guest-mesa", async (req, res) => {
       return res.status(400).json({ error: `Error al mover invitado: ${msg}` });
     }
     return res.status(500).json({ error: `Error al mover invitado: ${msg}` });
+  }
+});
+
+app.put("/api/guest-mesa-bulk", async (req, res) => {
+  if (!process.env.COMPOSIO_API_KEY) {
+    return res.status(501).json({ error: "Escritura no configurada (falta COMPOSIO_API_KEY)" });
+  }
+
+  const moves = req.body?.moves;
+  if (!Array.isArray(moves) || moves.length === 0) {
+    return res.status(400).json({ error: "moves requerido (array no vacío)" });
+  }
+  if (moves.length > 200) {
+    return res.status(400).json({ error: "Máximo 200 movimientos por request" });
+  }
+
+  try {
+    const result = await enqueueWrite(async () => {
+      const { rows, idx } = await fetchSheetSnapshot();
+      if (idx.mesa < 0 || idx.nombre < 0) {
+        throw new Error("No se pudieron detectar columnas en la hoja");
+      }
+
+      const rowTargetMap = new Map();
+      const normalizedMoves = [];
+      for (const mv of moves) {
+        const guestId = String(mv?.guestId || "");
+        const guestName = String(mv?.guestName || "").trim();
+        const targetMesa = String(mv?.targetMesa || "");
+        const sourceMesaKey = mv?.sourceMesaKey;
+
+        if (!guestId || !guestName || !targetMesa) {
+          throw new Error("Cada movimiento requiere guestId, guestName y targetMesa");
+        }
+
+        const isClear = targetMesa === "Sin Asignar";
+        const mesa = isClear ? null : parseMesa(targetMesa);
+        if (!isClear && mesa === null) {
+          throw new Error(`Mesa inválida en bulk: ${targetMesa}`);
+        }
+
+        const idMatch = guestId.match(/^row-(\d+)$/);
+        if (!idMatch) throw new Error(`guestId inválido: ${guestId}`);
+        const sheetRow = Number(idMatch[1]);
+        const rowIdx = sheetRow - 2;
+        if (rowIdx < 0 || rowIdx >= rows.length) throw new Error(`Fila fuera de rango para guestId: ${guestId}`);
+
+        const rowName = String(rows[rowIdx][idx.nombre] || "").trim();
+        if (!rowName) throw new Error(`La fila ${sheetRow} no tiene nombre`);
+        if (rowName !== guestName) {
+          throw new Error(`Mismatch de nombre en fila ${sheetRow}: esperado "${guestName}", encontrado "${rowName}"`);
+        }
+
+        if (sourceMesaKey !== undefined && sourceMesaKey !== null) {
+          const pendingCurrent = pendingMesaByRow.get(sheetRow);
+          const effectiveMesaRaw = pendingCurrent ? pendingCurrent.targetMesaLabel : rows[rowIdx][idx.mesa];
+          const currentMesa = parseMesa(effectiveMesaRaw);
+          const expected = String(sourceMesaKey) === "_unassigned" ? null : parseMesa(sourceMesaKey);
+          if (currentMesa !== expected) {
+            throw new Error(`Conflicto de estado para ${guestName}: la mesa actual cambió, recarga antes de mover`);
+          }
+        }
+
+        const mesaLabel = isClear ? "" : (mesa === "Novios" ? "Mesa Novios" : `Mesa ${mesa}`);
+        if (rowTargetMap.has(sheetRow) && rowTargetMap.get(sheetRow) !== mesaLabel) {
+          throw new Error(`Movimiento duplicado conflictivo para fila ${sheetRow}`);
+        }
+        rowTargetMap.set(sheetRow, mesaLabel);
+        normalizedMoves.push({ guestId, guestName, sheetRow, rowIdx, mesa, isClear, mesaLabel });
+      }
+
+      if (normalizedMoves.length === 0) {
+        return { updated: 0, verified: true, results: [] };
+      }
+
+      const colLetter = columnIndexToLetter(idx.mesa);
+      const rowsToWrite = [...rowTargetMap.keys()].sort((a, b) => a - b);
+      const minRow = rowsToWrite[0];
+      const maxRow = rowsToWrite[rowsToWrite.length - 1];
+      const values = [];
+      for (let sheetRow = minRow; sheetRow <= maxRow; sheetRow++) {
+        if (rowTargetMap.has(sheetRow)) {
+          values.push([rowTargetMap.get(sheetRow)]);
+        } else {
+          const rowIdx = sheetRow - 2;
+          const cur = rowIdx >= 0 && rowIdx < rows.length ? rows[rowIdx][idx.mesa] : "";
+          values.push([String(cur || "")]);
+        }
+      }
+
+      await composio.executeAction("GOOGLESHEETS_BATCH_UPDATE", {
+        spreadsheet_id: SPREADSHEET_ID,
+        sheet_name: SHEET_NAME,
+        first_cell_location: `${colLetter}${minRow}`,
+        values,
+        valueInputOption: "USER_ENTERED"
+      });
+
+      const now = Date.now();
+      for (const mv of normalizedMoves) {
+        pendingMesaByRow.set(mv.sheetRow, { targetMesaLabel: mv.mesaLabel, at: now });
+      }
+
+      let verifiedRows = new Set();
+      try {
+        const cellList = normalizedMoves.map((mv) => `${colLetter}${mv.sheetRow}`);
+        const seenMap = await readCellsViaComposio(cellList);
+        if (seenMap) {
+          for (const mv of normalizedMoves) {
+            const seen = seenMap.get(`${colLetter}${mv.sheetRow}`) ?? "";
+            const seenMesa = parseMesa(seen);
+            const ok = mv.isClear ? String(seen).trim() === "" : seenMesa === mv.mesa;
+            if (ok) verifiedRows.add(mv.sheetRow);
+          }
+        }
+      } catch {
+        // Ignore verification failures; pending state keeps UI consistent until propagation.
+      }
+
+      cache = { at: 0, data: null, error: null };
+      return {
+        updated: normalizedMoves.length,
+        verified: verifiedRows.size === normalizedMoves.length,
+        results: normalizedMoves.map((mv) => ({
+          guest: mv.guestName,
+          newMesa: mv.isClear ? "Sin Asignar" : mv.mesaLabel,
+          cell: `${colLetter}${mv.sheetRow}`,
+          verified: verifiedRows.has(mv.sheetRow)
+        }))
+      };
+    });
+
+    return res.json({ ok: true, ...result });
+  } catch (err) {
+    const msg = String(err.message || err);
+    if (msg.includes("Conflicto") || msg.includes("Mismatch")) {
+      return res.status(409).json({ error: `Error en bulk move: ${msg}` });
+    }
+    if (msg.includes("guestId inválido") || msg.includes("fuera de rango") || msg.includes("no tiene nombre") || msg.includes("inválida")) {
+      return res.status(400).json({ error: `Error en bulk move: ${msg}` });
+    }
+    return res.status(500).json({ error: `Error en bulk move: ${msg}` });
   }
 });
 

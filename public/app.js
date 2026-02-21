@@ -237,15 +237,64 @@ async function moveSelectedGuestsBulk() {
     : (lastData.mesas.find((m) => String(m.key) === targetKey)?.label || "");
   if (!targetLabel) return;
 
-  const ids = Array.from(selectedGuestIds);
-  for (const guestId of ids) {
+  const moveRows = [];
+  for (const guestId of Array.from(selectedGuestIds)) {
     const row = findGuestById(guestId);
     if (!row) continue;
     if (row.mesaLabel === targetLabel) continue;
-    await moveGuest(guestId, row.guest.name, targetLabel);
+    moveRows.push({
+      guestId: row.guest.id,
+      guestName: row.guest.name,
+      sourceMesaKey: row.mesaKey,
+      sourceMesaLabel: row.mesaLabel
+    });
   }
-  clearSelectedGuests();
-  await load(true);
+  if (moveRows.length === 0) {
+    clearSelectedGuests();
+    return;
+  }
+
+  moveInFlight = true;
+  stopPolling();
+  statusTextEl.textContent = `Moviendo ${moveRows.length} invitados...`;
+  try {
+    const res = await fetch("/api/guest-mesa-bulk", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        moves: moveRows.map((r) => ({
+          guestId: r.guestId,
+          guestName: r.guestName,
+          targetMesa: targetLabel,
+          sourceMesaKey: r.sourceMesaKey
+        }))
+      })
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+
+    for (const r of moveRows) {
+      pushUndo(r.guestId, r.guestName, r.sourceMesaLabel);
+    }
+
+    await load(true);
+    clearSelectedGuests();
+    const targetMesaObj = targetLabel === "Sin Asignar"
+      ? { key: "_unassigned", label: "Sin Asignar", capacity: null, used: (lastData.unassigned || []).length, guests: (lastData.unassigned || []), status: "" }
+      : lastData.mesas.find((m) => m.label === targetLabel);
+    if (targetMesaObj) selectMesa(targetMesaObj);
+    statusTextEl.textContent = `Bulk ok: ${data.updated} invitados movidos`;
+    if (data.verified === false) {
+      statusTextEl.textContent += " (algunos pendientes de propagación)";
+    }
+  } catch (err) {
+    statusTextEl.textContent = `Error: ${err.message}`;
+    await load(true);
+  } finally {
+    moveInFlight = false;
+    updateBulkUi();
+    if (!isEditor) startPolling();
+  }
 }
 
 function selectMesa(m) {
