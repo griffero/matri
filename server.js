@@ -16,6 +16,8 @@ const COORDS_PATH = path.join(__dirname, "data", "coords.json");
 const VERIFY_WRITE_MAX_ATTEMPTS = Number(process.env.VERIFY_WRITE_MAX_ATTEMPTS || 8);
 const VERIFY_WRITE_DELAY_MS = Number(process.env.VERIFY_WRITE_DELAY_MS || 1200);
 const PENDING_TTL_MS = Number(process.env.PENDING_TTL_MS || 10 * 60 * 1000);
+const READ_MAX_ROWS = Number(process.env.READ_MAX_ROWS || 1200);
+const READ_MAX_COL = process.env.READ_MAX_COL || "I";
 
 let cache = {
   at: 0,
@@ -108,6 +110,35 @@ async function fetchWithTimeout(url, timeoutMs) {
 }
 
 async function fetchSheetSnapshot() {
+  if (process.env.COMPOSIO_API_KEY) {
+    try {
+      const range = `${SHEET_NAME}!A1:${READ_MAX_COL}${READ_MAX_ROWS}`;
+      const resp = await composio.executeAction("GOOGLESHEETS_BATCH_GET", {
+        spreadsheet_id: SPREADSHEET_ID,
+        ranges: [range]
+      });
+      const matrix = resp?.data?.valueRanges?.[0]?.values || [];
+      if (matrix.length >= 1) {
+        const cols = (matrix[0] || []).map((v) => String(v || ""));
+        const width = Math.max(cols.length, 9);
+        const paddedCols = Array(width).fill("").map((_, i) => cols[i] || "");
+        const rows = [];
+        for (let r = 1; r < matrix.length; r++) {
+          const src = matrix[r] || [];
+          const row = Array(width).fill("");
+          for (let c = 0; c < Math.min(width, src.length); c++) {
+            row[c] = src[c];
+          }
+          rows.push(row);
+        }
+        const idx = detectColumns(paddedCols, rows);
+        return { cols: paddedCols, rows, idx, source: "composio_batch_get" };
+      }
+    } catch {
+      // Fallback to gviz when Composio read is unavailable.
+    }
+  }
+
   const gvizUrl = `https://docs.google.com/spreadsheets/d/${SPREADSHEET_ID}/gviz/tq?sheet=${encodeURIComponent(SHEET_NAME)}&headers=1&tqx=out:json`;
   const raw = await fetchWithTimeout(gvizUrl, FETCH_TIMEOUT_MS);
   const parsed = stripGvizPayload(raw);
