@@ -150,6 +150,28 @@ function findGuestById(guestId) {
   return null;
 }
 
+function getAllGuestsWithSource() {
+  if (!lastData) return [];
+  const out = [];
+  for (const m of lastData.mesas) {
+    for (const g of m.guests) {
+      out.push({
+        ...g,
+        sourceMesaKey: String(m.key),
+        sourceMesaLabel: m.label
+      });
+    }
+  }
+  for (const g of (lastData.unassigned || [])) {
+    out.push({
+      ...g,
+      sourceMesaKey: "_unassigned",
+      sourceMesaLabel: "Sin Asignar"
+    });
+  }
+  return out;
+}
+
 async function moveGuest(guestId, guestName, targetMesa, fromUndo = false) {
   if (moveInFlight) return;
   if (!lastData) return;
@@ -237,21 +259,32 @@ function selectMesa(m) {
   if (marker) marker.classList.add("active");
 
   mesaSelectEl.value = String(m.key);
-  if (m.capacity != null) {
-    mesaInfoEl.textContent = `${m.used}/${m.capacity} personas - ${m.status}`;
+  const q = normText(guestSearchQuery);
+  const isGlobalSearch = !!q;
+
+  let visibleGuests;
+  if (isGlobalSearch) {
+    visibleGuests = getAllGuestsWithSource()
+      .filter((g) => normText(g.name).includes(q))
+      .sort((a, b) => a.name.localeCompare(b.name, "es"));
+    mesaInfoEl.textContent = `${visibleGuests.length} resultados en todas las mesas`;
   } else {
-    mesaInfoEl.textContent = `${m.guests.length} invitados sin mesa`;
+    visibleGuests = m.guests
+      .map((g) => ({
+        ...g,
+        sourceMesaKey: String(m.key),
+        sourceMesaLabel: m.label || "Sin Asignar"
+      }))
+      .sort((a, b) => a.name.localeCompare(b.name, "es"));
+    if (m.capacity != null) {
+      mesaInfoEl.textContent = `${m.used}/${m.capacity} personas - ${m.status}`;
+    } else {
+      mesaInfoEl.textContent = `${m.guests.length} invitados sin mesa`;
+    }
   }
 
-  const q = normText(guestSearchQuery);
-  const filteredGuests = m.guests
-    .filter((g) => !q || normText(g.name).includes(q))
-    .sort((a, b) => a.name.localeCompare(b.name, "es"))
-  ;
-  mesaInfoEl.textContent += q ? ` | ${filteredGuests.length} encontrados` : "";
-
   const frag = document.createDocumentFragment();
-  filteredGuests.forEach((g) => {
+  visibleGuests.forEach((g) => {
       const li = document.createElement("li");
       const main = document.createElement("div");
       main.className = "guest-main";
@@ -268,11 +301,22 @@ function selectMesa(m) {
       main.appendChild(cb);
       main.appendChild(nameSpan);
       li.appendChild(main);
+      const metaWrap = document.createElement("div");
+      metaWrap.className = "guest-meta";
+      if (isGlobalSearch) {
+        const mesaSpan = document.createElement("span");
+        mesaSpan.className = "guest-mesa";
+        mesaSpan.textContent = g.sourceMesaLabel;
+        metaWrap.appendChild(mesaSpan);
+      }
       if (g.grupo) {
         const grupoSpan = document.createElement("span");
         grupoSpan.className = "guest-grupo";
         grupoSpan.textContent = g.grupo;
-        li.appendChild(grupoSpan);
+        metaWrap.appendChild(grupoSpan);
+      }
+      if (metaWrap.childNodes.length > 0) {
+        li.appendChild(metaWrap);
       }
       li.draggable = true;
 
@@ -284,8 +328,8 @@ function selectMesa(m) {
         dragState = {
           guestId: g.id,
           guestName: g.name,
-          sourceMesaKey: String(m.key),
-          sourceMesaLabel: m.label || "Sin Asignar"
+          sourceMesaKey: g.sourceMesaKey,
+          sourceMesaLabel: g.sourceMesaLabel
         };
         e.dataTransfer.effectAllowed = "move";
         li.classList.add("dragging-guest");
