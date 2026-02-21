@@ -134,8 +134,10 @@ async function fetchSheetSnapshot() {
         const idx = detectColumns(paddedCols, rows);
         return { cols: paddedCols, rows, idx, source: "composio_batch_get" };
       }
+      throw new Error("Composio devolvió snapshot vacío");
     } catch {
-      // Fallback to gviz when Composio read is unavailable.
+      // With write-enabled mode, avoid gviz fallback because row indexes can drift.
+      throw new Error("No se pudo leer snapshot por Composio");
     }
   }
 
