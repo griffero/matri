@@ -19,30 +19,52 @@ function pushUndo(guestName, previousMesa) {
   undoBtn.disabled = false;
 }
 
-async function performUndo() {
+function performUndo() {
   if (!undoStack.length) return;
   const { guestName, previousMesa } = undoStack.pop();
   if (!undoStack.length) undoBtn.disabled = true;
 
-  statusTextEl.textContent = `Deshaciendo: ${guestName} → ${previousMesa}...`;
-  try {
-    const res = await fetch("/api/guest-mesa", {
-      method: "PUT",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ guestName, targetMesa: previousMesa })
-    });
-    const data = await res.json();
-    if (!res.ok) {
-      alert(data.error || "Error al deshacer");
-      statusTextEl.textContent = `Error: ${data.error}`;
-      return;
+  // Find current mesa of the guest to do optimistic revert
+  let currentKey = "_unassigned";
+  if (lastData) {
+    for (const m of lastData.mesas) {
+      if (m.guests.some((g) => g.name === guestName)) {
+        currentKey = String(m.key);
+        break;
+      }
     }
-    statusTextEl.textContent = `Deshecho: ${guestName} → ${data.newMesa}`;
-    await load(true);
-  } catch (err) {
-    alert(`Error: ${err.message}`);
-    statusTextEl.textContent = `Error: ${err.message}`;
   }
+
+  // Determine target key from previousMesa label
+  let targetKey = "_unassigned";
+  if (previousMesa === "Sin Asignar") {
+    targetKey = "_unassigned";
+  } else if (lastData) {
+    const tgt = lastData.mesas.find((m) => m.label === previousMesa);
+    if (tgt) targetKey = String(tgt.key);
+  }
+
+  applyMoveLocally(guestName, currentKey, targetKey);
+
+  statusTextEl.textContent = `Deshaciendo: ${guestName} → ${previousMesa}...`;
+  fetch("/api/guest-mesa", {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ guestName, targetMesa: previousMesa })
+  })
+    .then((res) => res.json().then((data) => ({ ok: res.ok, data })))
+    .then(({ ok, data }) => {
+      if (!ok) {
+        statusTextEl.textContent = `Error: ${data.error}`;
+        load(true);
+        return;
+      }
+      statusTextEl.textContent = `Deshecho: ${guestName} → ${data.newMesa}`;
+    })
+    .catch((err) => {
+      statusTextEl.textContent = `Error: ${err.message}`;
+      load(true);
+    });
 }
 
 undoBtn.addEventListener("click", performUndo);
@@ -110,6 +132,86 @@ function renderSummary(meta) {
 
 let selectedMesaKey = null;
 let dragState = null; // { guestName, sourceMesaKey, sourceMesaLabel }
+
+/* --- Optimistic move: update UI instantly, API in background --- */
+function applyMoveLocally(guestName, sourceMesaKey, targetMesaKey) {
+  if (!lastData) return;
+
+  // Find and remove guest from source
+  let guest = null;
+  if (sourceMesaKey === "_unassigned") {
+    const idx = (lastData.unassigned || []).findIndex((g) => g.name === guestName);
+    if (idx >= 0) guest = lastData.unassigned.splice(idx, 1)[0];
+  } else {
+    const srcMesa = lastData.mesas.find((m) => String(m.key) === sourceMesaKey);
+    if (srcMesa) {
+      const idx = srcMesa.guests.findIndex((g) => g.name === guestName);
+      if (idx >= 0) {
+        guest = srcMesa.guests.splice(idx, 1)[0];
+        const w = guest.plus1 ? 2 : 1;
+        srcMesa.used -= w;
+      }
+    }
+  }
+  if (!guest) return;
+
+  // Add guest to target
+  if (targetMesaKey === "_unassigned") {
+    lastData.unassigned = lastData.unassigned || [];
+    lastData.unassigned.push(guest);
+  } else {
+    const tgtMesa = lastData.mesas.find((m) => String(m.key) === targetMesaKey);
+    if (tgtMesa) {
+      tgtMesa.guests.push(guest);
+      const w = guest.plus1 ? 2 : 1;
+      tgtMesa.used += w;
+    }
+  }
+
+  // Recompute meta
+  const totalUsed = lastData.mesas.reduce((a, m) => a + m.used, 0);
+  const totalCapacity = lastData.mesas.reduce((a, m) => a + m.capacity, 0);
+  lastData.meta.totalUsed = totalUsed;
+  lastData.meta.occupancy = totalCapacity ? totalUsed / totalCapacity : 0;
+
+  // Re-render
+  renderSummary(lastData.meta);
+  renderBoard(lastData.mesas);
+  populateDropdown(lastData);
+
+  // Re-select the target mesa to show updated guest list
+  if (targetMesaKey === "_unassigned") {
+    const unassigned = lastData.unassigned || [];
+    selectMesa({ key: "_unassigned", label: "Sin Asignar", capacity: null, used: unassigned.length, guests: unassigned, status: "" });
+  } else {
+    const tgtMesa = lastData.mesas.find((m) => String(m.key) === targetMesaKey);
+    if (tgtMesa) selectMesa(tgtMesa);
+  }
+}
+
+function fireMoveBg(guestName, targetMesa, sourceMesaLabel) {
+  pushUndo(guestName, sourceMesaLabel);
+  statusTextEl.textContent = `Guardando ${guestName} → ${targetMesa}...`;
+
+  fetch("/api/guest-mesa", {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ guestName, targetMesa })
+  })
+    .then((res) => res.json().then((data) => ({ ok: res.ok, data })))
+    .then(({ ok, data }) => {
+      if (!ok) {
+        statusTextEl.textContent = `Error: ${data.error}`;
+        load(true); // revert to server state
+        return;
+      }
+      statusTextEl.textContent = `${guestName} → ${data.newMesa}`;
+    })
+    .catch((err) => {
+      statusTextEl.textContent = `Error: ${err.message}`;
+      load(true); // revert to server state
+    });
+}
 
 function selectMesa(m) {
   selectedMesaKey = m.key;
@@ -230,7 +332,7 @@ function renderBoard(mesas) {
     marker.addEventListener("dragleave", () => {
       marker.classList.remove("drop-target");
     });
-    marker.addEventListener("drop", async (e) => {
+    marker.addEventListener("drop", (e) => {
       e.preventDefault();
       e.stopPropagation();
       marker.classList.remove("drop-target");
@@ -240,30 +342,10 @@ function renderBoard(mesas) {
       });
 
       if (!dragState || dragState.sourceMesaKey === key) return;
-      const { guestName, sourceMesaLabel } = dragState;
+      const { guestName, sourceMesaKey, sourceMesaLabel } = dragState;
 
-      const targetMesa = m.label;
-      statusTextEl.textContent = `Moviendo ${guestName} → ${targetMesa}...`;
-
-      try {
-        const res = await fetch("/api/guest-mesa", {
-          method: "PUT",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ guestName, targetMesa })
-        });
-        const data = await res.json();
-        if (!res.ok) {
-          alert(data.error || "Error al mover invitado");
-          statusTextEl.textContent = `Error: ${data.error}`;
-          return;
-        }
-        pushUndo(guestName, sourceMesaLabel);
-        statusTextEl.textContent = `${guestName} → ${data.newMesa}`;
-        await load(true);
-      } catch (err) {
-        alert(`Error: ${err.message}`);
-        statusTextEl.textContent = `Error: ${err.message}`;
-      }
+      applyMoveLocally(guestName, sourceMesaKey, key);
+      fireMoveBg(guestName, m.label, sourceMesaLabel);
     });
 
     if (isEditor) {
@@ -277,7 +359,7 @@ function renderBoard(mesas) {
 /* --- Drop on board (not on a marker) → unassign guest --- */
 const boardEl = document.getElementById("board");
 boardEl.addEventListener("dragover", (e) => e.preventDefault());
-boardEl.addEventListener("drop", async (e) => {
+boardEl.addEventListener("drop", (e) => {
   e.preventDefault();
   document.querySelectorAll(".marker").forEach((mk) => {
     mk.classList.remove("can-drop");
@@ -285,29 +367,10 @@ boardEl.addEventListener("drop", async (e) => {
   });
 
   if (!dragState || dragState.sourceMesaKey === "_unassigned") return;
-  const { guestName, sourceMesaLabel } = dragState;
+  const { guestName, sourceMesaKey, sourceMesaLabel } = dragState;
 
-  statusTextEl.textContent = `Quitando ${guestName} de ${sourceMesaLabel}...`;
-
-  try {
-    const res = await fetch("/api/guest-mesa", {
-      method: "PUT",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ guestName, targetMesa: "Sin Asignar" })
-    });
-    const data = await res.json();
-    if (!res.ok) {
-      alert(data.error || "Error al desasignar invitado");
-      statusTextEl.textContent = `Error: ${data.error}`;
-      return;
-    }
-    pushUndo(guestName, sourceMesaLabel);
-    statusTextEl.textContent = `${guestName} → Sin Asignar`;
-    await load(true);
-  } catch (err) {
-    alert(`Error: ${err.message}`);
-    statusTextEl.textContent = `Error: ${err.message}`;
-  }
+  applyMoveLocally(guestName, sourceMesaKey, "_unassigned");
+  fireMoveBg(guestName, "Sin Asignar", sourceMesaLabel);
 });
 
 async function load(force = false) {
