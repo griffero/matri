@@ -242,7 +242,8 @@ app.put("/api/guest-mesa", async (req, res) => {
     const parsed = stripGvizPayload(raw);
 
     const cols = parsed.table.cols.map((c) => c.label || c.id || "");
-    const rows = parsed.table.rows.map((r) => (r.c || []).map((c) => (c ? c.v : "")));
+    const rawRows = parsed.table.rows;
+    const rows = rawRows.map((r) => (r.c || []).map((c) => (c ? c.v : "")));
 
     const idx = detectColumns(cols, rows);
     if (idx.mesa < 0 || idx.nombre < 0) {
@@ -262,9 +263,15 @@ app.put("/api/guest-mesa", async (req, res) => {
       return res.status(404).json({ error: `Invitado no encontrado: "${guestName}"` });
     }
 
-    // Build A1 reference: column letter + spreadsheet row (header row = 1, data starts at 2)
+    // Build A1 reference using column letter + spreadsheet row
     const colLetter = String.fromCharCode(65 + idx.mesa); // A=0, B=1, C=2...
-    const sheetRow = guestRowIdx + 2; // +1 for 0-index, +1 for header row
+    // Detect actual header offset: check if first data row looks like a header
+    const firstRowName = rows.length > 0 ? String(rows[0][idx.nombre] || "").trim().toLowerCase() : "";
+    const hasHeaderInData = /(nombre|name|invitado)/i.test(firstRowName);
+    const headerOffset = hasHeaderInData ? 1 : 0;
+    // gviz rows start after the header row (sheet row 1), so row[i] = sheet row i+2
+    // But if gviz includes the header row in data, offset is +1 instead
+    const sheetRow = guestRowIdx + 2 - headerOffset;
     const cell = `${colLetter}${sheetRow}`;
 
     const mesaLabel = isClear ? "" : (mesa === "Novios" ? "Mesa Novios" : `Mesa ${mesa}`);

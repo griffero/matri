@@ -109,6 +109,7 @@ function renderSummary(meta) {
 }
 
 let selectedMesaKey = null;
+let dragState = null; // { guestName, sourceMesaKey, sourceMesaLabel }
 
 function selectMesa(m) {
   selectedMesaKey = m.key;
@@ -130,18 +131,20 @@ function selectMesa(m) {
       const li = document.createElement("li");
       li.textContent = `${g.name}${g.plus1 ? " (+1)" : ""}`;
       li.draggable = true;
-      li.dataset.guest = g.name;
-      li.dataset.sourceMesa = String(m.key);
 
       li.addEventListener("dragstart", (e) => {
-        e.dataTransfer.setData("text/plain", g.name);
-        e.dataTransfer.setData("application/x-source-mesa", String(m.key));
-        e.dataTransfer.setData("application/x-source-label", m.label || "Sin Asignar");
+        dragState = {
+          guestName: g.name,
+          sourceMesaKey: String(m.key),
+          sourceMesaLabel: m.label || "Sin Asignar"
+        };
+        e.dataTransfer.effectAllowed = "move";
         li.classList.add("dragging-guest");
         document.querySelectorAll(".marker").forEach((mk) => mk.classList.add("can-drop"));
       });
 
       li.addEventListener("dragend", () => {
+        dragState = null;
         li.classList.remove("dragging-guest");
         document.querySelectorAll(".marker").forEach((mk) => {
           mk.classList.remove("can-drop");
@@ -227,10 +230,8 @@ function renderBoard(mesas) {
         mk.classList.remove("drop-target");
       });
 
-      const guestName = e.dataTransfer.getData("text/plain");
-      const sourceMesaKey = e.dataTransfer.getData("application/x-source-mesa");
-      const sourceMesaLabel = e.dataTransfer.getData("application/x-source-label");
-      if (!guestName || sourceMesaKey === key) return;
+      if (!dragState || dragState.sourceMesaKey === key) return;
+      const { guestName, sourceMesaLabel } = dragState;
 
       const targetMesa = m.label;
       statusTextEl.textContent = `Moviendo ${guestName} → ${targetMesa}...`;
@@ -247,7 +248,7 @@ function renderBoard(mesas) {
           statusTextEl.textContent = `Error: ${data.error}`;
           return;
         }
-        pushUndo(guestName, sourceMesaLabel || "Sin Asignar");
+        pushUndo(guestName, sourceMesaLabel);
         statusTextEl.textContent = `${guestName} → ${data.newMesa}`;
         await load(true);
       } catch (err) {
