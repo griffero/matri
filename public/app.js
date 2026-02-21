@@ -157,6 +157,9 @@ async function moveGuest(guestId, guestName, targetMesa, fromUndo = false) {
       if (targetMesaObj) selectMesa(targetMesaObj);
     }
     statusTextEl.textContent = fromUndo ? `Deshecho: ${guestName} → ${data.newMesa}` : `${guestName} → ${data.newMesa}`;
+    if (data.verified === false) {
+      statusTextEl.textContent += " (pendiente de propagación en Google)";
+    }
   } catch (err) {
     statusTextEl.textContent = `Error: ${err.message}`;
     await load(true);

@@ -15,6 +15,7 @@ const FETCH_TIMEOUT_MS = Number(process.env.FETCH_TIMEOUT_MS || 10000);
 const COORDS_PATH = path.join(__dirname, "data", "coords.json");
 const VERIFY_WRITE_MAX_ATTEMPTS = Number(process.env.VERIFY_WRITE_MAX_ATTEMPTS || 8);
 const VERIFY_WRITE_DELAY_MS = Number(process.env.VERIFY_WRITE_DELAY_MS || 1200);
+const PENDING_TTL_MS = Number(process.env.PENDING_TTL_MS || 10 * 60 * 1000);
 
 let cache = {
   at: 0,
@@ -22,6 +23,7 @@ let cache = {
   error: null
 };
 let writeQueue = Promise.resolve();
+const pendingMesaByRow = new Map();
 
 function stripGvizPayload(text) {
   const match = text.match(/setResponse\((.*)\);?\s*$/s);
@@ -51,6 +53,12 @@ function columnIndexToLetter(idx) {
 
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function cleanupPending(now = Date.now()) {
+  for (const [row, p] of pendingMesaByRow.entries()) {
+    if (now - p.at > PENDING_TTL_MS) pendingMesaByRow.delete(row);
+  }
 }
 
 function detectColumns(cols, rows) {
@@ -116,6 +124,7 @@ function enqueueWrite(taskFn) {
 }
 
 async function loadMesasFromSheet() {
+  cleanupPending();
   const { rows, idx } = await fetchSheetSnapshot();
   if (idx.nombre < 0 || idx.plus < 0 || idx.mesa < 0) {
     throw new Error("No se pudieron detectar columnas Nombre/Con +1/Mesa");
@@ -149,7 +158,16 @@ async function loadMesasFromSheet() {
     const grupo = idx.grupo >= 0 ? String(row[idx.grupo] || "").trim() : "";
     const guest = { id: `row-${sheetRow}`, row: sheetRow, name: nombre, plus1: plus, grupo };
 
-    const mesa = parseMesa(row[idx.mesa]);
+    const pending = pendingMesaByRow.get(sheetRow);
+    const mesaRaw = pending ? pending.targetMesaLabel : row[idx.mesa];
+    const mesa = parseMesa(mesaRaw);
+    if (pending) {
+      const seenMesa = parseMesa(row[idx.mesa]);
+      const targetMesa = parseMesa(pending.targetMesaLabel);
+      if (seenMesa === targetMesa) {
+        pendingMesaByRow.delete(sheetRow);
+      }
+    }
     if (!mesa || !mesasMap[mesa]) {
       unassigned.push(guest);
       continue;
@@ -316,23 +334,31 @@ app.put("/api/guest-mesa", async (req, res) => {
         values: [[mesaLabel]],
         valueInputOption: "USER_ENTERED"
       });
+      pendingMesaByRow.set(sheetRow, { targetMesaLabel: mesaLabel, at: Date.now() });
 
+      let verified = false;
       for (let attempt = 1; attempt <= VERIFY_WRITE_MAX_ATTEMPTS; attempt++) {
         const snap = await fetchSheetSnapshot();
         if (rowIdx < snap.rows.length) {
           const seen = snap.rows[rowIdx][snap.idx.mesa];
           const seenMesa = parseMesa(seen);
           const ok = isClear ? String(seen || "").trim() === "" : seenMesa === mesa;
-          if (ok) break;
-        }
-        if (attempt === VERIFY_WRITE_MAX_ATTEMPTS) {
-          throw new Error("Escritura no visible aún en Google Sheets (timeout de verificación)");
+          if (ok) {
+            verified = true;
+            pendingMesaByRow.delete(sheetRow);
+            break;
+          }
         }
         await sleep(VERIFY_WRITE_DELAY_MS * attempt);
       }
 
       cache = { at: 0, data: null, error: null };
-      return { guest: guestName.trim(), newMesa: isClear ? "Sin Asignar" : mesaLabel, cell };
+      return {
+        guest: guestName.trim(),
+        newMesa: isClear ? "Sin Asignar" : mesaLabel,
+        cell,
+        verified
+      };
     });
 
     return res.json({ ok: true, ...result });
