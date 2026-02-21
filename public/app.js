@@ -1,14 +1,57 @@
 const markersEl = document.getElementById("markers");
 const summaryEl = document.getElementById("summary");
-const mesaTitleEl = document.getElementById("mesaTitle");
+const mesaSelectEl = document.getElementById("mesaSelect");
 const mesaInfoEl = document.getElementById("mesaInfo");
 const guestListEl = document.getElementById("guestList");
 const statusTextEl = document.getElementById("statusText");
 const refreshBtn = document.getElementById("refreshBtn");
+const undoBtn = document.getElementById("undoBtn");
 
 const POLL_MS = 15000;
 let lastData = null;
 let pollTimer = null;
+
+/* --- Undo stack --- */
+const undoStack = [];
+
+function pushUndo(guestName, previousMesa) {
+  undoStack.push({ guestName, previousMesa });
+  undoBtn.disabled = false;
+}
+
+async function performUndo() {
+  if (!undoStack.length) return;
+  const { guestName, previousMesa } = undoStack.pop();
+  if (!undoStack.length) undoBtn.disabled = true;
+
+  statusTextEl.textContent = `Deshaciendo: ${guestName} → ${previousMesa}...`;
+  try {
+    const res = await fetch("/api/guest-mesa", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ guestName, targetMesa: previousMesa })
+    });
+    const data = await res.json();
+    if (!res.ok) {
+      alert(data.error || "Error al deshacer");
+      statusTextEl.textContent = `Error: ${data.error}`;
+      return;
+    }
+    statusTextEl.textContent = `Deshecho: ${guestName} → ${data.newMesa}`;
+    await load(true);
+  } catch (err) {
+    alert(`Error: ${err.message}`);
+    statusTextEl.textContent = `Error: ${err.message}`;
+  }
+}
+
+undoBtn.addEventListener("click", performUndo);
+document.addEventListener("keydown", (e) => {
+  if ((e.metaKey || e.ctrlKey) && e.key === "z") {
+    e.preventDefault();
+    performUndo();
+  }
+});
 
 /* --- Default fallback coords (used if server has none) --- */
 const defaultCoords = {
@@ -73,8 +116,12 @@ function selectMesa(m) {
   const marker = document.querySelector(`[data-key="${m.key}"]`);
   if (marker) marker.classList.add("active");
 
-  mesaTitleEl.textContent = m.label;
-  mesaInfoEl.textContent = `${m.used}/${m.capacity} personas - ${m.status}`;
+  mesaSelectEl.value = String(m.key);
+  if (m.capacity != null) {
+    mesaInfoEl.textContent = `${m.used}/${m.capacity} personas - ${m.status}`;
+  } else {
+    mesaInfoEl.textContent = `${m.guests.length} invitados sin mesa`;
+  }
 
   const frag = document.createDocumentFragment();
   m.guests
@@ -89,6 +136,7 @@ function selectMesa(m) {
       li.addEventListener("dragstart", (e) => {
         e.dataTransfer.setData("text/plain", g.name);
         e.dataTransfer.setData("application/x-source-mesa", String(m.key));
+        e.dataTransfer.setData("application/x-source-label", m.label || "Sin Asignar");
         li.classList.add("dragging-guest");
         document.querySelectorAll(".marker").forEach((mk) => mk.classList.add("can-drop"));
       });
@@ -107,6 +155,48 @@ function selectMesa(m) {
   guestListEl.innerHTML = "";
   guestListEl.appendChild(frag);
 }
+
+function populateDropdown(data) {
+  const prev = mesaSelectEl.value;
+  mesaSelectEl.innerHTML = '<option value="">-- Selecciona mesa --</option>';
+
+  for (const m of data.mesas) {
+    const opt = document.createElement("option");
+    opt.value = String(m.key);
+    opt.textContent = `${m.label} (${m.used}/${m.capacity})`;
+    mesaSelectEl.appendChild(opt);
+  }
+
+  // "Sin Asignar" option
+  const unassigned = data.unassigned || [];
+  const optSA = document.createElement("option");
+  optSA.value = "_unassigned";
+  optSA.textContent = `Sin Asignar (${unassigned.length})`;
+  mesaSelectEl.appendChild(optSA);
+
+  if (prev) mesaSelectEl.value = prev;
+}
+
+mesaSelectEl.addEventListener("change", () => {
+  const val = mesaSelectEl.value;
+  if (!val || !lastData) return;
+
+  if (val === "_unassigned") {
+    const unassigned = lastData.unassigned || [];
+    selectMesa({
+      key: "_unassigned",
+      label: "Sin Asignar",
+      capacity: null,
+      used: unassigned.length,
+      guests: unassigned,
+      status: ""
+    });
+    return;
+  }
+
+  const mesa = lastData.mesas.find((m) => String(m.key) === val);
+  if (mesa) selectMesa(mesa);
+});
 
 function renderBoard(mesas) {
   markersEl.innerHTML = "";
@@ -138,8 +228,9 @@ function renderBoard(mesas) {
       });
 
       const guestName = e.dataTransfer.getData("text/plain");
-      const sourceMesa = e.dataTransfer.getData("application/x-source-mesa");
-      if (!guestName || sourceMesa === key) return;
+      const sourceMesaKey = e.dataTransfer.getData("application/x-source-mesa");
+      const sourceMesaLabel = e.dataTransfer.getData("application/x-source-label");
+      if (!guestName || sourceMesaKey === key) return;
 
       const targetMesa = m.label;
       statusTextEl.textContent = `Moviendo ${guestName} → ${targetMesa}...`;
@@ -156,6 +247,7 @@ function renderBoard(mesas) {
           statusTextEl.textContent = `Error: ${data.error}`;
           return;
         }
+        pushUndo(guestName, sourceMesaLabel || "Sin Asignar");
         statusTextEl.textContent = `${guestName} → ${data.newMesa}`;
         await load(true);
       } catch (err) {
@@ -182,6 +274,7 @@ async function load(force = false) {
 
     renderSummary(data.meta);
     renderBoard(data.mesas);
+    populateDropdown(data);
 
     const note = data.cache?.stale ? " (stale cache)" : "";
     statusTextEl.textContent = `OK${note} - ${new Date(data.generatedAt).toLocaleString()}`;

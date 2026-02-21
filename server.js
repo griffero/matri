@@ -105,18 +105,23 @@ async function loadMesasFromSheet() {
 
   let invitados = 0;
   let invitadosConPlus = 0;
+  const unassigned = [];
 
   for (const row of rows) {
     const nombre = String(row[idx.nombre] || "").trim();
     if (!nombre) continue;
     invitados += 1;
 
-    const mesa = parseMesa(row[idx.mesa]);
-    if (!mesa || !mesasMap[mesa]) continue;
-
     const plus = normalize(row[idx.plus]) === "si" || normalize(row[idx.plus]) === "sí";
-    const weight = plus ? 2 : 1;
     if (plus) invitadosConPlus += 1;
+
+    const mesa = parseMesa(row[idx.mesa]);
+    if (!mesa || !mesasMap[mesa]) {
+      unassigned.push({ name: nombre, plus1: plus });
+      continue;
+    }
+
+    const weight = plus ? 2 : 1;
 
     mesasMap[mesa].used += weight;
     mesasMap[mesa].guests.push({ name: nombre, plus1: plus });
@@ -149,7 +154,8 @@ async function loadMesasFromSheet() {
       over: mesas.filter((m) => m.used > m.capacity).length,
       available: mesas.filter((m) => m.used < m.capacity - 2).length
     },
-    mesas
+    mesas,
+    unassigned
   };
 }
 
@@ -223,8 +229,9 @@ app.put("/api/guest-mesa", async (req, res) => {
   if (!guestName || typeof guestName !== "string") {
     return res.status(400).json({ error: "guestName requerido" });
   }
-  const mesa = parseMesa(targetMesa);
-  if (mesa === null) {
+  const isClear = targetMesa === "Sin Asignar";
+  const mesa = isClear ? null : parseMesa(targetMesa);
+  if (!isClear && mesa === null) {
     return res.status(400).json({ error: `Mesa inválida: ${targetMesa}` });
   }
 
@@ -260,7 +267,7 @@ app.put("/api/guest-mesa", async (req, res) => {
     const sheetRow = guestRowIdx + 2; // +1 for 0-index, +1 for header row
     const cell = `${colLetter}${sheetRow}`;
 
-    const mesaLabel = mesa === "Novios" ? "Mesa Novios" : `Mesa ${mesa}`;
+    const mesaLabel = isClear ? "" : (mesa === "Novios" ? "Mesa Novios" : `Mesa ${mesa}`);
 
     await composio.executeAction("GOOGLESHEETS_BATCH_UPDATE", {
       spreadsheet_id: SPREADSHEET_ID,
@@ -273,7 +280,7 @@ app.put("/api/guest-mesa", async (req, res) => {
     // Clear cache so next read picks up the change
     cache = { at: 0, data: null, error: null };
 
-    return res.json({ ok: true, guest: guestName.trim(), newMesa: mesaLabel, cell });
+    return res.json({ ok: true, guest: guestName.trim(), newMesa: isClear ? "Sin Asignar" : mesaLabel, cell });
   } catch (err) {
     return res.status(500).json({ error: `Error al mover invitado: ${err.message}` });
   }

@@ -116,6 +116,37 @@ button {
   flex-direction: column;
   overflow: hidden;
 }
+.mesa-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 6px;
+}
+.mesa-header select {
+  flex: 1;
+  font-family: inherit;
+  font-size: 14px;
+  font-weight: 600;
+  padding: 6px 8px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #fff;
+  color: var(--ink);
+  cursor: pointer;
+}
+.undo-btn {
+  font-size: 12px;
+  padding: 6px 10px;
+  background: #f3f4f6;
+  color: var(--ink);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  white-space: nowrap;
+}
+.undo-btn:disabled {
+  opacity: 0.35;
+  cursor: not-allowed;
+}
 .card h2, .card h3 { margin: 0 0 6px; font-size: 15px; }
 .card p { margin: 4px 0 0; }
 .small { font-size: 13px; }
