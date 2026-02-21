@@ -200,3 +200,13 @@ button {
   z-index: 10;
   cursor: grabbing;
 }
+
+/* Guest drag & drop */
+.guest-list li[draggable] { cursor: grab; }
+.guest-list li.dragging-guest { opacity: 0.4; }
+.marker.can-drop { outline: 2px dashed rgba(0,0,0,0.3); }
+.marker.drop-target {
+  outline: 3px solid #2563eb;
+  transform: translate(-50%,-50%) scale(1.1);
+  z-index: 5;
+}

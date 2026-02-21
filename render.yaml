@@ -18,3 +18,5 @@ services:
         value: 15000
       - key: FETCH_TIMEOUT_MS
         value: 10000
+      - key: COMPOSIO_API_KEY
+        sync: false

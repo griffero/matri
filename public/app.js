@@ -65,17 +65,47 @@ function renderSummary(meta) {
     .join("");
 }
 
+let selectedMesaKey = null;
+
 function selectMesa(m) {
+  selectedMesaKey = m.key;
   document.querySelectorAll(".marker").forEach((el) => el.classList.remove("active"));
   const marker = document.querySelector(`[data-key="${m.key}"]`);
   if (marker) marker.classList.add("active");
 
   mesaTitleEl.textContent = m.label;
   mesaInfoEl.textContent = `${m.used}/${m.capacity} personas - ${m.status}`;
-  guestListEl.innerHTML = m.guests
+
+  const frag = document.createDocumentFragment();
+  m.guests
     .sort((a, b) => a.name.localeCompare(b.name, "es"))
-    .map((g) => `<li>${g.name}${g.plus1 ? " (+1)" : ""}</li>`)
-    .join("");
+    .forEach((g) => {
+      const li = document.createElement("li");
+      li.textContent = `${g.name}${g.plus1 ? " (+1)" : ""}`;
+      li.draggable = true;
+      li.dataset.guest = g.name;
+      li.dataset.sourceMesa = String(m.key);
+
+      li.addEventListener("dragstart", (e) => {
+        e.dataTransfer.setData("text/plain", g.name);
+        e.dataTransfer.setData("application/x-source-mesa", String(m.key));
+        li.classList.add("dragging-guest");
+        document.querySelectorAll(".marker").forEach((mk) => mk.classList.add("can-drop"));
+      });
+
+      li.addEventListener("dragend", () => {
+        li.classList.remove("dragging-guest");
+        document.querySelectorAll(".marker").forEach((mk) => {
+          mk.classList.remove("can-drop");
+          mk.classList.remove("drop-target");
+        });
+      });
+
+      frag.appendChild(li);
+    });
+
+  guestListEl.innerHTML = "";
+  guestListEl.appendChild(frag);
 }
 
 function renderBoard(mesas) {
@@ -90,6 +120,49 @@ function renderBoard(mesas) {
     marker.dataset.key = key;
     marker.innerHTML = `${m.label.replace("Mesa ", "Mesa ")}<br>${m.used}/${m.capacity}`;
     marker.addEventListener("click", () => selectMesa(m));
+
+    // Drop target for guest drag & drop
+    marker.addEventListener("dragover", (e) => {
+      e.preventDefault();
+      marker.classList.add("drop-target");
+    });
+    marker.addEventListener("dragleave", () => {
+      marker.classList.remove("drop-target");
+    });
+    marker.addEventListener("drop", async (e) => {
+      e.preventDefault();
+      marker.classList.remove("drop-target");
+      document.querySelectorAll(".marker").forEach((mk) => {
+        mk.classList.remove("can-drop");
+        mk.classList.remove("drop-target");
+      });
+
+      const guestName = e.dataTransfer.getData("text/plain");
+      const sourceMesa = e.dataTransfer.getData("application/x-source-mesa");
+      if (!guestName || sourceMesa === key) return;
+
+      const targetMesa = m.label;
+      statusTextEl.textContent = `Moviendo ${guestName} → ${targetMesa}...`;
+
+      try {
+        const res = await fetch("/api/guest-mesa", {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ guestName, targetMesa })
+        });
+        const data = await res.json();
+        if (!res.ok) {
+          alert(data.error || "Error al mover invitado");
+          statusTextEl.textContent = `Error: ${data.error}`;
+          return;
+        }
+        statusTextEl.textContent = `${guestName} → ${data.newMesa}`;
+        await load(true);
+      } catch (err) {
+        alert(`Error: ${err.message}`);
+        statusTextEl.textContent = `Error: ${err.message}`;
+      }
+    });
 
     if (isEditor) {
       setupDrag(marker, key);

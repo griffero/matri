@@ -2,6 +2,7 @@ const express = require("express");
 const path = require("path");
 const fs = require("fs");
 const { capacities, mesaOrder, parseMesa, mesaCapacity, mesaStatus, normalize } = require("./lib/mesa-logic");
+const composio = require("./lib/composio");
 
 const app = express();
 
@@ -211,6 +212,71 @@ app.put("/api/coords", (req, res) => {
   fs.mkdirSync(path.dirname(COORDS_PATH), { recursive: true });
   fs.writeFileSync(COORDS_PATH, JSON.stringify(body, null, 2));
   res.json({ ok: true, keys: Object.keys(body).length });
+});
+
+app.put("/api/guest-mesa", async (req, res) => {
+  if (!process.env.COMPOSIO_API_KEY) {
+    return res.status(501).json({ error: "Escritura no configurada (falta COMPOSIO_API_KEY)" });
+  }
+
+  const { guestName, targetMesa } = req.body || {};
+  if (!guestName || typeof guestName !== "string") {
+    return res.status(400).json({ error: "guestName requerido" });
+  }
+  const mesa = parseMesa(targetMesa);
+  if (mesa === null) {
+    return res.status(400).json({ error: `Mesa inválida: ${targetMesa}` });
+  }
+
+  try {
+    // Read sheet via gviz to find guest row and mesa column
+    const gvizUrl = `https://docs.google.com/spreadsheets/d/${SPREADSHEET_ID}/gviz/tq?sheet=${encodeURIComponent(SHEET_NAME)}&tqx=out:json`;
+    const raw = await fetchWithTimeout(gvizUrl, FETCH_TIMEOUT_MS);
+    const parsed = stripGvizPayload(raw);
+
+    const cols = parsed.table.cols.map((c) => c.label || c.id || "");
+    const rows = parsed.table.rows.map((r) => (r.c || []).map((c) => (c ? c.v : "")));
+
+    const idx = detectColumns(cols, rows);
+    if (idx.mesa < 0 || idx.nombre < 0) {
+      return res.status(500).json({ error: "No se pudieron detectar columnas en la hoja" });
+    }
+
+    // Find the row index of the guest
+    let guestRowIdx = -1;
+    for (let i = 0; i < rows.length; i++) {
+      const name = String(rows[i][idx.nombre] || "").trim();
+      if (name === guestName.trim()) {
+        guestRowIdx = i;
+        break;
+      }
+    }
+    if (guestRowIdx < 0) {
+      return res.status(404).json({ error: `Invitado no encontrado: "${guestName}"` });
+    }
+
+    // Build A1 reference: column letter + spreadsheet row (header row = 1, data starts at 2)
+    const colLetter = String.fromCharCode(65 + idx.mesa); // A=0, B=1, C=2...
+    const sheetRow = guestRowIdx + 2; // +1 for 0-index, +1 for header row
+    const cell = `${colLetter}${sheetRow}`;
+
+    const mesaLabel = mesa === "Novios" ? "Mesa Novios" : `Mesa ${mesa}`;
+
+    await composio.executeAction("GOOGLESHEETS_BATCH_UPDATE", {
+      spreadsheet_id: SPREADSHEET_ID,
+      sheet_name: SHEET_NAME,
+      first_cell_location: cell,
+      values: [[mesaLabel]],
+      valueInputOption: "USER_ENTERED"
+    });
+
+    // Clear cache so next read picks up the change
+    cache = { at: 0, data: null, error: null };
+
+    return res.json({ ok: true, guest: guestName.trim(), newMesa: mesaLabel, cell });
+  } catch (err) {
+    return res.status(500).json({ error: `Error al mover invitado: ${err.message}` });
+  }
 });
 
 app.get("*", (_req, res) => {
