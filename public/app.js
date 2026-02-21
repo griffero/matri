@@ -129,7 +129,15 @@ function selectMesa(m) {
     .sort((a, b) => a.name.localeCompare(b.name, "es"))
     .forEach((g) => {
       const li = document.createElement("li");
-      li.textContent = `${g.name}${g.plus1 ? " (+1)" : ""}`;
+      const nameSpan = document.createElement("span");
+      nameSpan.textContent = `${g.name}${g.plus1 ? " (+1)" : ""}`;
+      li.appendChild(nameSpan);
+      if (g.grupo) {
+        const grupoSpan = document.createElement("span");
+        grupoSpan.className = "guest-grupo";
+        grupoSpan.textContent = g.grupo;
+        li.appendChild(grupoSpan);
+      }
       li.draggable = true;
 
       li.addEventListener("dragstart", (e) => {

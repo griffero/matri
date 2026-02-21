@@ -39,7 +39,8 @@ function detectColumns(cols, rows) {
   const byLabel = {
     nombre: cols.findIndex((c) => /(^|\s)nombre(\s|$)/i.test(String(c || ""))),
     plus: cols.findIndex((c) => /\+1/i.test(String(c || ""))),
-    mesa: cols.findIndex((c) => /^mesa$/i.test(String(c || "")))
+    mesa: cols.findIndex((c) => /^mesa$/i.test(String(c || ""))),
+    grupo: cols.findIndex((c) => /^grupo$/i.test(String(c || "")))
   };
   if (byLabel.nombre >= 0 && byLabel.plus >= 0 && byLabel.mesa >= 0) return byLabel;
 
@@ -64,7 +65,8 @@ function detectColumns(cols, rows) {
     if (score > bestMesa.score) bestMesa = { idx: i, score };
   }
 
-  return { nombre: bestName.idx, plus: bestPlus.idx, mesa: bestMesa.idx };
+  const grupoIdx = cols.findIndex((c) => /grupo/i.test(String(c || "")));
+  return { nombre: bestName.idx, plus: bestPlus.idx, mesa: bestMesa.idx, grupo: grupoIdx };
 }
 
 async function fetchWithTimeout(url, timeoutMs) {
@@ -115,16 +117,18 @@ async function loadMesasFromSheet() {
     const plus = normalize(row[idx.plus]) === "si" || normalize(row[idx.plus]) === "sí";
     if (plus) invitadosConPlus += 1;
 
+    const grupo = idx.grupo >= 0 ? String(row[idx.grupo] || "").trim() : "";
+
     const mesa = parseMesa(row[idx.mesa]);
     if (!mesa || !mesasMap[mesa]) {
-      unassigned.push({ name: nombre, plus1: plus });
+      unassigned.push({ name: nombre, plus1: plus, grupo });
       continue;
     }
 
     const weight = plus ? 2 : 1;
 
     mesasMap[mesa].used += weight;
-    mesasMap[mesa].guests.push({ name: nombre, plus1: plus });
+    mesasMap[mesa].guests.push({ name: nombre, plus1: plus, grupo });
   }
 
   const mesas = mesaOrder.map((m) => {

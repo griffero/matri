@@ -179,6 +179,19 @@ button {
 .guest-list li {
   padding: 4px 8px;
   border-radius: 6px;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 6px;
+}
+.guest-grupo {
+  font-size: 10px;
+  color: var(--muted);
+  background: var(--bg);
+  padding: 2px 6px;
+  border-radius: 4px;
+  white-space: nowrap;
+  flex-shrink: 0;
 }
 .guest-list li:nth-child(odd) {
   background: var(--bg);
