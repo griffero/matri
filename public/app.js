@@ -46,6 +46,7 @@ function performUndo() {
 
   applyMoveLocally(guestName, currentKey, targetKey);
 
+  stopPolling();
   statusTextEl.textContent = `Deshaciendo: ${guestName} → ${previousMesa}...`;
   fetch("/api/guest-mesa", {
     method: "PUT",
@@ -56,14 +57,15 @@ function performUndo() {
     .then(({ ok, data }) => {
       if (!ok) {
         statusTextEl.textContent = `Error: ${data.error}`;
-        load(true);
+        load(true).then(() => { if (!isEditor) startPolling(); });
         return;
       }
       statusTextEl.textContent = `Deshecho: ${guestName} → ${data.newMesa}`;
+      if (!isEditor) setTimeout(() => startPolling(), 30000);
     })
     .catch((err) => {
       statusTextEl.textContent = `Error: ${err.message}`;
-      load(true);
+      load(true).then(() => { if (!isEditor) startPolling(); });
     });
 }
 
@@ -193,6 +195,9 @@ function fireMoveBg(guestName, targetMesa, sourceMesaLabel) {
   pushUndo(guestName, sourceMesaLabel);
   statusTextEl.textContent = `Guardando ${guestName} → ${targetMesa}...`;
 
+  // Pause polling so stale gviz data doesn't overwrite the optimistic state
+  stopPolling();
+
   fetch("/api/guest-mesa", {
     method: "PUT",
     headers: { "Content-Type": "application/json" },
@@ -202,14 +207,16 @@ function fireMoveBg(guestName, targetMesa, sourceMesaLabel) {
     .then(({ ok, data }) => {
       if (!ok) {
         statusTextEl.textContent = `Error: ${data.error}`;
-        load(true); // revert to server state
+        load(true).then(() => { if (!isEditor) startPolling(); });
         return;
       }
       statusTextEl.textContent = `${guestName} → ${data.newMesa}`;
+      // Restart polling after a delay to let gviz propagate the write
+      if (!isEditor) setTimeout(() => startPolling(), 30000);
     })
     .catch((err) => {
       statusTextEl.textContent = `Error: ${err.message}`;
-      load(true); // revert to server state
+      load(true).then(() => { if (!isEditor) startPolling(); });
     });
 }
 
