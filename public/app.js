@@ -10,63 +10,22 @@ const undoBtn = document.getElementById("undoBtn");
 const POLL_MS = 15000;
 let lastData = null;
 let pollTimer = null;
+let moveInFlight = false;
 
 /* --- Undo stack --- */
 const undoStack = [];
 
-function pushUndo(guestName, previousMesa) {
-  undoStack.push({ guestName, previousMesa });
+function pushUndo(guestId, guestName, previousMesa) {
+  undoStack.push({ guestId, guestName, previousMesa });
   undoBtn.disabled = false;
 }
 
-function performUndo() {
+async function performUndo() {
+  if (moveInFlight) return;
   if (!undoStack.length) return;
-  const { guestName, previousMesa } = undoStack.pop();
+  const { guestId, guestName, previousMesa } = undoStack.pop();
   if (!undoStack.length) undoBtn.disabled = true;
-
-  // Find current mesa of the guest to do optimistic revert
-  let currentKey = "_unassigned";
-  if (lastData) {
-    for (const m of lastData.mesas) {
-      if (m.guests.some((g) => g.name === guestName)) {
-        currentKey = String(m.key);
-        break;
-      }
-    }
-  }
-
-  // Determine target key from previousMesa label
-  let targetKey = "_unassigned";
-  if (previousMesa === "Sin Asignar") {
-    targetKey = "_unassigned";
-  } else if (lastData) {
-    const tgt = lastData.mesas.find((m) => m.label === previousMesa);
-    if (tgt) targetKey = String(tgt.key);
-  }
-
-  applyMoveLocally(guestName, currentKey, targetKey);
-
-  stopPolling();
-  statusTextEl.textContent = `Deshaciendo: ${guestName} → ${previousMesa}...`;
-  fetch("/api/guest-mesa", {
-    method: "PUT",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ guestName, targetMesa: previousMesa })
-  })
-    .then((res) => res.json().then((data) => ({ ok: res.ok, data })))
-    .then(({ ok, data }) => {
-      if (!ok) {
-        statusTextEl.textContent = `Error: ${data.error}`;
-        load(true).then(() => { if (!isEditor) startPolling(); });
-        return;
-      }
-      statusTextEl.textContent = `Deshecho: ${guestName} → ${data.newMesa}`;
-      if (!isEditor) setTimeout(() => startPolling(), 30000);
-    })
-    .catch((err) => {
-      statusTextEl.textContent = `Error: ${err.message}`;
-      load(true).then(() => { if (!isEditor) startPolling(); });
-    });
+  await moveGuest(guestId, guestName, previousMesa, true);
 }
 
 undoBtn.addEventListener("click", performUndo);
@@ -133,91 +92,78 @@ function renderSummary(meta) {
 }
 
 let selectedMesaKey = null;
-let dragState = null; // { guestName, sourceMesaKey, sourceMesaLabel }
+let dragState = null; // { guestId, guestName, sourceMesaKey, sourceMesaLabel }
 
-/* --- Optimistic move: update UI instantly, API in background --- */
-function applyMoveLocally(guestName, sourceMesaKey, targetMesaKey) {
-  if (!lastData) return;
-
-  // Find and remove guest from source
-  let guest = null;
-  if (sourceMesaKey === "_unassigned") {
-    const idx = (lastData.unassigned || []).findIndex((g) => g.name === guestName);
-    if (idx >= 0) guest = lastData.unassigned.splice(idx, 1)[0];
-  } else {
-    const srcMesa = lastData.mesas.find((m) => String(m.key) === sourceMesaKey);
-    if (srcMesa) {
-      const idx = srcMesa.guests.findIndex((g) => g.name === guestName);
-      if (idx >= 0) {
-        guest = srcMesa.guests.splice(idx, 1)[0];
-        const w = guest.plus1 ? 2 : 1;
-        srcMesa.used -= w;
-      }
-    }
-  }
-  if (!guest) return;
-
-  // Add guest to target
-  if (targetMesaKey === "_unassigned") {
-    lastData.unassigned = lastData.unassigned || [];
-    lastData.unassigned.push(guest);
-  } else {
-    const tgtMesa = lastData.mesas.find((m) => String(m.key) === targetMesaKey);
-    if (tgtMesa) {
-      tgtMesa.guests.push(guest);
-      const w = guest.plus1 ? 2 : 1;
-      tgtMesa.used += w;
-    }
-  }
-
-  // Recompute meta
-  const totalUsed = lastData.mesas.reduce((a, m) => a + m.used, 0);
-  const totalCapacity = lastData.mesas.reduce((a, m) => a + m.capacity, 0);
-  lastData.meta.totalUsed = totalUsed;
-  lastData.meta.occupancy = totalCapacity ? totalUsed / totalCapacity : 0;
-
-  // Re-render
-  renderSummary(lastData.meta);
-  renderBoard(lastData.mesas);
-  populateDropdown(lastData);
-
-  // Re-select the target mesa to show updated guest list
-  if (targetMesaKey === "_unassigned") {
+function getMesaByKey(key) {
+  if (!lastData) return null;
+  if (key === "_unassigned") {
     const unassigned = lastData.unassigned || [];
-    selectMesa({ key: "_unassigned", label: "Sin Asignar", capacity: null, used: unassigned.length, guests: unassigned, status: "" });
-  } else {
-    const tgtMesa = lastData.mesas.find((m) => String(m.key) === targetMesaKey);
-    if (tgtMesa) selectMesa(tgtMesa);
+    return { key: "_unassigned", label: "Sin Asignar", capacity: null, used: unassigned.length, guests: unassigned, status: "" };
   }
+  return lastData.mesas.find((m) => String(m.key) === String(key)) || null;
 }
 
-function fireMoveBg(guestName, targetMesa, sourceMesaLabel) {
-  pushUndo(guestName, sourceMesaLabel);
-  statusTextEl.textContent = `Guardando ${guestName} → ${targetMesa}...`;
+function findGuestCurrentMesaKey(guestId) {
+  if (!lastData) return null;
+  for (const m of lastData.mesas) {
+    if (m.guests.some((g) => g.id === guestId)) return String(m.key);
+  }
+  if ((lastData.unassigned || []).some((g) => g.id === guestId)) return "_unassigned";
+  return null;
+}
 
-  // Pause polling so stale gviz data doesn't overwrite the optimistic state
+async function moveGuest(guestId, guestName, targetMesa, fromUndo = false) {
+  if (moveInFlight) return;
+  if (!lastData) return;
+  const sourceMesaKey = findGuestCurrentMesaKey(guestId);
+  if (!sourceMesaKey) {
+    statusTextEl.textContent = `Error: no encontré a ${guestName} en datos actuales`;
+    return;
+  }
+
+  const sourceMesa = getMesaByKey(sourceMesaKey);
+  const sourceMesaLabel = sourceMesa?.label || "Sin Asignar";
+  const targetMesaKey = targetMesa === "Sin Asignar"
+    ? "_unassigned"
+    : (lastData.mesas.find((m) => m.label === targetMesa)?.key ?? null);
+
+  if (!fromUndo && sourceMesaLabel === targetMesa) return;
+  if (targetMesaKey !== null && String(sourceMesaKey) === String(targetMesaKey)) return;
+
+  moveInFlight = true;
+  statusTextEl.textContent = `Guardando ${guestName} → ${targetMesa}...`;
   stopPolling();
 
-  fetch("/api/guest-mesa", {
-    method: "PUT",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ guestName, targetMesa })
-  })
-    .then((res) => res.json().then((data) => ({ ok: res.ok, data })))
-    .then(({ ok, data }) => {
-      if (!ok) {
-        statusTextEl.textContent = `Error: ${data.error}`;
-        load(true).then(() => { if (!isEditor) startPolling(); });
-        return;
-      }
-      statusTextEl.textContent = `${guestName} → ${data.newMesa}`;
-      // Restart polling after a delay to let gviz propagate the write
-      if (!isEditor) setTimeout(() => startPolling(), 30000);
-    })
-    .catch((err) => {
-      statusTextEl.textContent = `Error: ${err.message}`;
-      load(true).then(() => { if (!isEditor) startPolling(); });
+  try {
+    const res = await fetch("/api/guest-mesa", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ guestId, guestName, targetMesa, sourceMesaKey })
     });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+
+    if (!fromUndo) {
+      pushUndo(guestId, guestName, sourceMesaLabel);
+    }
+
+    await load(true);
+
+    if (targetMesa === "Sin Asignar") {
+      const unassigned = lastData.unassigned || [];
+      selectMesa({ key: "_unassigned", label: "Sin Asignar", capacity: null, used: unassigned.length, guests: unassigned, status: "" });
+    } else {
+      const targetMesaObj = lastData.mesas.find((m) => m.label === targetMesa);
+      if (targetMesaObj) selectMesa(targetMesaObj);
+    }
+    statusTextEl.textContent = fromUndo ? `Deshecho: ${guestName} → ${data.newMesa}` : `${guestName} → ${data.newMesa}`;
+  } catch (err) {
+    statusTextEl.textContent = `Error: ${err.message}`;
+    await load(true);
+  } finally {
+    moveInFlight = false;
+    if (!isEditor) startPolling();
+  }
 }
 
 function selectMesa(m) {
@@ -250,7 +196,12 @@ function selectMesa(m) {
       li.draggable = true;
 
       li.addEventListener("dragstart", (e) => {
+        if (moveInFlight) {
+          e.preventDefault();
+          return;
+        }
         dragState = {
+          guestId: g.id,
           guestName: g.name,
           sourceMesaKey: String(m.key),
           sourceMesaLabel: m.label || "Sin Asignar"
@@ -348,11 +299,10 @@ function renderBoard(mesas) {
         mk.classList.remove("drop-target");
       });
 
-      if (!dragState || dragState.sourceMesaKey === key) return;
-      const { guestName, sourceMesaKey, sourceMesaLabel } = dragState;
-
-      applyMoveLocally(guestName, sourceMesaKey, key);
-      fireMoveBg(guestName, m.label, sourceMesaLabel);
+      if (!dragState || dragState.sourceMesaKey === key || moveInFlight) return;
+      const { guestId, guestName } = dragState;
+      dragState = null;
+      moveGuest(guestId, guestName, m.label);
     });
 
     if (isEditor) {
@@ -373,11 +323,10 @@ boardEl.addEventListener("drop", (e) => {
     mk.classList.remove("drop-target");
   });
 
-  if (!dragState || dragState.sourceMesaKey === "_unassigned") return;
-  const { guestName, sourceMesaKey, sourceMesaLabel } = dragState;
-
-  applyMoveLocally(guestName, sourceMesaKey, "_unassigned");
-  fireMoveBg(guestName, "Sin Asignar", sourceMesaLabel);
+  if (!dragState || dragState.sourceMesaKey === "_unassigned" || moveInFlight) return;
+  const { guestId, guestName } = dragState;
+  dragState = null;
+  moveGuest(guestId, guestName, "Sin Asignar");
 });
 
 async function load(force = false) {

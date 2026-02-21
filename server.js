@@ -13,12 +13,15 @@ const SHEET_NAME = process.env.SHEET_NAME || "Invitados";
 const CACHE_TTL_MS = Number(process.env.CACHE_TTL_MS || 15000);
 const FETCH_TIMEOUT_MS = Number(process.env.FETCH_TIMEOUT_MS || 10000);
 const COORDS_PATH = path.join(__dirname, "data", "coords.json");
+const VERIFY_WRITE_MAX_ATTEMPTS = Number(process.env.VERIFY_WRITE_MAX_ATTEMPTS || 8);
+const VERIFY_WRITE_DELAY_MS = Number(process.env.VERIFY_WRITE_DELAY_MS || 1200);
 
 let cache = {
   at: 0,
   data: null,
   error: null
 };
+let writeQueue = Promise.resolve();
 
 function stripGvizPayload(text) {
   const match = text.match(/setResponse\((.*)\);?\s*$/s);
@@ -33,6 +36,21 @@ function countMatches(rows, colIdx, fn) {
     if (fn(v)) c += 1;
   }
   return c;
+}
+
+function columnIndexToLetter(idx) {
+  let n = idx + 1;
+  let out = "";
+  while (n > 0) {
+    const rem = (n - 1) % 26;
+    out = String.fromCharCode(65 + rem) + out;
+    n = Math.floor((n - 1) / 26);
+  }
+  return out;
+}
+
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 function detectColumns(cols, rows) {
@@ -81,15 +99,24 @@ async function fetchWithTimeout(url, timeoutMs) {
   }
 }
 
-async function loadMesasFromSheet() {
+async function fetchSheetSnapshot() {
   const gvizUrl = `https://docs.google.com/spreadsheets/d/${SPREADSHEET_ID}/gviz/tq?sheet=${encodeURIComponent(SHEET_NAME)}&headers=1&tqx=out:json`;
   const raw = await fetchWithTimeout(gvizUrl, FETCH_TIMEOUT_MS);
   const parsed = stripGvizPayload(raw);
-
   const cols = parsed.table.cols.map((c) => c.label || c.id || "");
   const rows = parsed.table.rows.map((r) => (r.c || []).map((c) => (c ? c.v : "")));
-
   const idx = detectColumns(cols, rows);
+  return { cols, rows, idx };
+}
+
+function enqueueWrite(taskFn) {
+  const next = writeQueue.then(taskFn, taskFn);
+  writeQueue = next.catch(() => undefined);
+  return next;
+}
+
+async function loadMesasFromSheet() {
+  const { rows, idx } = await fetchSheetSnapshot();
   if (idx.nombre < 0 || idx.plus < 0 || idx.mesa < 0) {
     throw new Error("No se pudieron detectar columnas Nombre/Con +1/Mesa");
   }
@@ -109,7 +136,9 @@ async function loadMesasFromSheet() {
   let invitadosConPlus = 0;
   const unassigned = [];
 
-  for (const row of rows) {
+  for (let i = 0; i < rows.length; i++) {
+    const row = rows[i];
+    const sheetRow = i + 2; // headers=1 => first data row is sheet row 2
     const nombre = String(row[idx.nombre] || "").trim();
     if (!nombre) continue;
     invitados += 1;
@@ -118,17 +147,18 @@ async function loadMesasFromSheet() {
     if (plus) invitadosConPlus += 1;
 
     const grupo = idx.grupo >= 0 ? String(row[idx.grupo] || "").trim() : "";
+    const guest = { id: `row-${sheetRow}`, row: sheetRow, name: nombre, plus1: plus, grupo };
 
     const mesa = parseMesa(row[idx.mesa]);
     if (!mesa || !mesasMap[mesa]) {
-      unassigned.push({ name: nombre, plus1: plus, grupo });
+      unassigned.push(guest);
       continue;
     }
 
     const weight = plus ? 2 : 1;
 
     mesasMap[mesa].used += weight;
-    mesasMap[mesa].guests.push({ name: nombre, plus1: plus, grupo });
+    mesasMap[mesa].guests.push(guest);
   }
 
   const mesas = mesaOrder.map((m) => {
@@ -229,9 +259,12 @@ app.put("/api/guest-mesa", async (req, res) => {
     return res.status(501).json({ error: "Escritura no configurada (falta COMPOSIO_API_KEY)" });
   }
 
-  const { guestName, targetMesa } = req.body || {};
+  const { guestId, guestName, targetMesa, sourceMesaKey } = req.body || {};
   if (!guestName || typeof guestName !== "string") {
     return res.status(400).json({ error: "guestName requerido" });
+  }
+  if (!guestId || typeof guestId !== "string") {
+    return res.status(400).json({ error: "guestId requerido" });
   }
   const isClear = targetMesa === "Sin Asignar";
   const mesa = isClear ? null : parseMesa(targetMesa);
@@ -240,53 +273,78 @@ app.put("/api/guest-mesa", async (req, res) => {
   }
 
   try {
-    // Read sheet via gviz (headers=1 forces row 1 as header, rows[0] = sheet row 2)
-    const gvizUrl = `https://docs.google.com/spreadsheets/d/${SPREADSHEET_ID}/gviz/tq?sheet=${encodeURIComponent(SHEET_NAME)}&headers=1&tqx=out:json`;
-    const raw = await fetchWithTimeout(gvizUrl, FETCH_TIMEOUT_MS);
-    const parsed = stripGvizPayload(raw);
-
-    const cols = parsed.table.cols.map((c) => c.label || c.id || "");
-    const rows = parsed.table.rows.map((r) => (r.c || []).map((c) => (c ? c.v : "")));
-
-    const idx = detectColumns(cols, rows);
-    if (idx.mesa < 0 || idx.nombre < 0) {
-      return res.status(500).json({ error: "No se pudieron detectar columnas en la hoja" });
-    }
-
-    // Find the row index of the guest
-    let guestRowIdx = -1;
-    for (let i = 0; i < rows.length; i++) {
-      const name = String(rows[i][idx.nombre] || "").trim();
-      if (name === guestName.trim()) {
-        guestRowIdx = i;
-        break;
+    const result = await enqueueWrite(async () => {
+      const { rows, idx } = await fetchSheetSnapshot();
+      if (idx.mesa < 0 || idx.nombre < 0) {
+        throw new Error("No se pudieron detectar columnas en la hoja");
       }
-    }
-    if (guestRowIdx < 0) {
-      return res.status(404).json({ error: `Invitado no encontrado: "${guestName}"` });
-    }
 
-    // Build A1 reference: with headers=1, rows[i] = sheet row i+2
-    const colLetter = String.fromCharCode(65 + idx.mesa);
-    const sheetRow = guestRowIdx + 2;
-    const cell = `${colLetter}${sheetRow}`;
+      const idMatch = String(guestId).match(/^row-(\d+)$/);
+      if (!idMatch) {
+        throw new Error(`guestId inválido: ${guestId}`);
+      }
+      const sheetRow = Number(idMatch[1]);
+      const rowIdx = sheetRow - 2;
+      if (rowIdx < 0 || rowIdx >= rows.length) {
+        throw new Error(`Fila fuera de rango para guestId: ${guestId}`);
+      }
 
-    const mesaLabel = isClear ? "" : (mesa === "Novios" ? "Mesa Novios" : `Mesa ${mesa}`);
+      const rowName = String(rows[rowIdx][idx.nombre] || "").trim();
+      if (!rowName) {
+        throw new Error(`La fila ${sheetRow} no tiene nombre`);
+      }
+      if (rowName !== guestName.trim()) {
+        throw new Error(`Mismatch de nombre en fila ${sheetRow}: esperado "${guestName}", encontrado "${rowName}"`);
+      }
 
-    await composio.executeAction("GOOGLESHEETS_BATCH_UPDATE", {
-      spreadsheet_id: SPREADSHEET_ID,
-      sheet_name: SHEET_NAME,
-      first_cell_location: cell,
-      values: [[mesaLabel]],
-      valueInputOption: "USER_ENTERED"
+      if (sourceMesaKey !== undefined && sourceMesaKey !== null) {
+        const currentMesa = parseMesa(rows[rowIdx][idx.mesa]);
+        const expected = String(sourceMesaKey) === "_unassigned" ? null : parseMesa(sourceMesaKey);
+        if (currentMesa !== expected) {
+          throw new Error("Conflicto de estado: la mesa actual cambió, recarga antes de mover");
+        }
+      }
+
+      const colLetter = columnIndexToLetter(idx.mesa);
+      const cell = `${colLetter}${sheetRow}`;
+      const mesaLabel = isClear ? "" : (mesa === "Novios" ? "Mesa Novios" : `Mesa ${mesa}`);
+
+      await composio.executeAction("GOOGLESHEETS_BATCH_UPDATE", {
+        spreadsheet_id: SPREADSHEET_ID,
+        sheet_name: SHEET_NAME,
+        first_cell_location: cell,
+        values: [[mesaLabel]],
+        valueInputOption: "USER_ENTERED"
+      });
+
+      for (let attempt = 1; attempt <= VERIFY_WRITE_MAX_ATTEMPTS; attempt++) {
+        const snap = await fetchSheetSnapshot();
+        if (rowIdx < snap.rows.length) {
+          const seen = snap.rows[rowIdx][snap.idx.mesa];
+          const seenMesa = parseMesa(seen);
+          const ok = isClear ? String(seen || "").trim() === "" : seenMesa === mesa;
+          if (ok) break;
+        }
+        if (attempt === VERIFY_WRITE_MAX_ATTEMPTS) {
+          throw new Error("Escritura no visible aún en Google Sheets (timeout de verificación)");
+        }
+        await sleep(VERIFY_WRITE_DELAY_MS * attempt);
+      }
+
+      cache = { at: 0, data: null, error: null };
+      return { guest: guestName.trim(), newMesa: isClear ? "Sin Asignar" : mesaLabel, cell };
     });
 
-    // Clear cache so next read picks up the change
-    cache = { at: 0, data: null, error: null };
-
-    return res.json({ ok: true, guest: guestName.trim(), newMesa: isClear ? "Sin Asignar" : mesaLabel, cell });
+    return res.json({ ok: true, ...result });
   } catch (err) {
-    return res.status(500).json({ error: `Error al mover invitado: ${err.message}` });
+    const msg = String(err.message || err);
+    if (msg.includes("Conflicto") || msg.includes("Mismatch")) {
+      return res.status(409).json({ error: `Error al mover invitado: ${msg}` });
+    }
+    if (msg.includes("guestId inválido") || msg.includes("fuera de rango") || msg.includes("no tiene nombre")) {
+      return res.status(400).json({ error: `Error al mover invitado: ${msg}` });
+    }
+    return res.status(500).json({ error: `Error al mover invitado: ${msg}` });
   }
 });
 
