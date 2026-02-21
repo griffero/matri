@@ -14,6 +14,9 @@ describe("parseMesa", () => {
   it("parses 'Mesa Novios' to 'Novios'", () => {
     assert.equal(parseMesa("Mesa Novios"), "Novios");
   });
+  it("parses 'Novios' to 'Novios'", () => {
+    assert.equal(parseMesa("Novios"), "Novios");
+  });
 
   it("returns null for empty string", () => {
     assert.equal(parseMesa(""), null);
